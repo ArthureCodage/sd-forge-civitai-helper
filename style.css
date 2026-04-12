@@ -1,0 +1,38 @@
+/* CivitAI Helper — Styles */
+
+#civitai_helper_root {
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Boutons sur les cartes Extra Networks */
+.ch-card-actions {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  display: flex;
+  gap: 4px;
+  z-index: 10;
+}
+
+.ch-card-btn {
+  background: rgba(0, 0, 0, 0.65);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 3px 6px;
+  transition: background 0.15s;
+}
+
+.ch-card-btn:hover {
+  background: rgba(249, 115, 22, 0.85);
+}
+
+/* Logs */
+#civitai_helper_root textarea[readonly] {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.78rem;
+  background-color: #0f172a;
+  color: #94a3b8;
+}
