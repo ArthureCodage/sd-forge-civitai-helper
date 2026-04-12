@@ -11,7 +11,7 @@ from modules import script_callbacks
 from ch_lib import api, utils, model_manager, downloader
 from ch_lib.downloader import DownloadTask, BatchItem
 
-# ── État de la phase d'analyse batch ─────────────────────────────────────────
+# ── Batch analysis phase state ─────────────────────────────────────────
 _resolve: dict = {"running": False, "total": 0, "done": 0, "log": []}
 
 
@@ -21,7 +21,7 @@ def cb_fetch_model(url_or_id: str, api_key: str):
     model_id, version_id = api.parse_model_url(url_or_id)
     if not model_id:
         return (
-            "❌ URL ou ID invalide.", gr.update(choices=[]), gr.update(choices=[]),
+            "❌ Invalid URL or ID.", gr.update(choices=[]), gr.update(choices=[]),
             "", "", [], "Other",
         )
     try:
@@ -35,11 +35,11 @@ def cb_fetch_model(url_or_id: str, api_key: str):
     versions   = api.extract_versions(model_info)
     if not versions:
         return (
-            "❌ Aucune version téléchargeable.", gr.update(choices=[]),
+            "❌ No downloadable versions found.", gr.update(choices=[]),
             gr.update(choices=[]), "", "", [], "Other",
         )
 
-    # Si un version_id est dans l'URL, on le pré-sélectionne
+    # Pre-select version from URL if specified
     default_version = versions[0]
     if version_id:
         match = next((v for v in versions if str(v["id"]) == str(version_id)), None)
@@ -53,12 +53,12 @@ def cb_fetch_model(url_or_id: str, api_key: str):
 
     summary = (
         f"**{model_info.get('name', '?')}** — "
-        f"Type : `{model_type}` — "
-        f"{len(versions)} version(s) disponible(s)"
+        f"Type: `{model_type}` — "
+        f"{len(versions)} version(s) available"
     )
 
     return (
-        f"✅ Modèle trouvé : {model_info.get('name', '?')}",
+        f"✅ Model found: {model_info.get('name', '?')}",
         gr.update(choices=version_labels, value=default_version["label"]),
         gr.update(choices=file_names, value=file_names[0] if file_names else None),
         summary,
@@ -83,21 +83,21 @@ def cb_start_download(
     versions_cache, model_type,
 ):
     if not versions_cache:
-        return "❌ Récupérez d'abord les infos du modèle."
+        return "❌ Fetch model info first."
     if not version_label or not file_name:
-        return "❌ Sélectionnez une version et un fichier."
+        return "❌ Select a version and file."
 
     q = downloader.get_queue()
     if q.running:
-        return "⚠️ Un téléchargement est déjà en cours."
+        return "⚠️ A download is already in progress."
 
     version = next((v for v in versions_cache if v["label"] == version_label), None)
     if not version:
-        return "❌ Version introuvable."
+        return "❌ Version not found."
 
     file_info = next((f for f in version["files"] if f["name"] == file_name), None)
     if not file_info:
-        return "❌ Fichier introuvable."
+        return "❌ File not found."
 
     model_id, _ = api.parse_model_url(url_or_id)
     try:
@@ -122,15 +122,15 @@ def cb_start_download(
         model_info       = model_info,
         download_preview = download_preview,
     )
-    return f"⏳ Démarrage du téléchargement : {file_info['name']}…"
+    return f"⏳ Starting download: {file_info['name']}…"
 
 
 def cb_cancel_download():
     q = downloader.get_queue()
     if q.running:
         q.cancel()
-        return "🛑 Annulation en cours…"
-    return "ℹ️ Aucun téléchargement actif."
+        return "🛑 Cancelling..."
+    return "ℹ️ No active download."
 
 
 def cb_poll_download():
@@ -140,13 +140,13 @@ def cb_poll_download():
 
     if task:
         if task.error:
-            status = f"❌ Erreur : {task.error}"
+            status = f"❌ Error: {task.error}"
             progress = 0.0
         elif task.cancelled:
-            status   = "⚠️ Annulé"
+            status   = "⚠️ Cancelled"
             progress = 0.0
         elif task.done:
-            status   = f"✅ Terminé : {task.filename}"
+            status   = f"✅ Completed: {task.filename}"
             progress = 1.0
         else:
             pct      = task.progress * 100
@@ -155,7 +155,7 @@ def cb_poll_download():
             status   = f"⏳ {task.filename} — {done_mb} / {total_mb} ({pct:.1f}%)"
             progress = task.progress
     else:
-        status   = "💤 En attente"
+        status   = "💤 Waiting"
         progress = 0.0
 
     return gr.update(value=status), gr.update(value=log), gr.update(value=progress)
@@ -166,21 +166,21 @@ def cb_poll_download():
 def cb_start_scan(api_key: str, skip_existing: bool):
     state = model_manager.get_scan_state()
     if state.running:
-        return "⚠️ Scan déjà en cours."
+        return "⚠️ Scan already in progress."
     threading.Thread(
         target=model_manager.scan_models,
         args=(api_key, skip_existing),
         daemon=True,
     ).start()
-    return "⏳ Scan démarré…"
+    return "⏳ Scan started..."
 
 
 def cb_cancel_scan():
     state = model_manager.get_scan_state()
     if state.running:
         state.cancel = True
-        return "🛑 Annulation en cours…"
-    return "ℹ️ Aucun scan actif."
+        return "🛑 Cancelling..."
+    return "ℹ️ No active scan."
 
 
 def cb_poll_scan():
@@ -203,13 +203,13 @@ def cb_poll_scan():
 def cb_check_updates(api_key: str):
     state = model_manager.get_update_state()
     if state.running:
-        return "⚠️ Vérification déjà en cours.", []
+        return "⚠️ Check already in progress.", []
     threading.Thread(
         target=model_manager.check_for_updates,
         args=(api_key,),
         daemon=True,
     ).start()
-    return "⏳ Vérification…", []
+    return "⏳ Checking...", []
 
 
 def cb_poll_updates():
@@ -217,10 +217,10 @@ def cb_poll_updates():
     log   = "\n".join(state.log[-30:])
 
     if state.running:
-        return gr.update(value="⏳ En cours…"), gr.update(value=log), gr.update()
+        return gr.update(value="⏳ In progress..."), gr.update(value=log), gr.update()
 
     if not state.results:
-        msg = "✅ Tous vos modèles sont à jour." if state.log else "💤"
+        msg = "✅ All your models are up to date." if state.log else "💤"
         return gr.update(value=msg), gr.update(value=log), gr.update(value=[])
 
     rows = [
@@ -229,7 +229,7 @@ def cb_poll_updates():
         for r in state.results
     ]
     return (
-        gr.update(value=f"🆕 {len(rows)} mise(s) à jour disponible(s)."),
+        gr.update(value=f"🆕 {len(rows)} update(s) available."),
         gr.update(value=log),
         gr.update(value=rows),
     )
@@ -238,7 +238,7 @@ def cb_poll_updates():
 def cb_download_update(selected_rows, api_key: str):
     state = model_manager.get_update_state()
     if not state.results or not selected_rows:
-        return "❌ Aucune ligne sélectionnée."
+        return "❌ No rows selected."
 
     messages = []
     for row_idx in selected_rows:
@@ -260,7 +260,7 @@ def cb_download_update(selected_rows, api_key: str):
             if f.get("downloadUrl")
         ]
         if not files:
-            messages.append(f"⚠️ {result['model_name']} : aucun fichier.")
+            messages.append(f"⚠️ {result['model_name']}: no files.")
             continue
 
         primary   = next((f for f in files if f["name"].endswith(".safetensors")), files[0])
@@ -276,7 +276,7 @@ def cb_download_update(selected_rows, api_key: str):
                           version_data=version_info, download_preview=True)
             messages.append(f"⏳ {result['model_name']} en cours…")
         else:
-            messages.append(f"⚠️ {result['model_name']} : queue occupée.")
+            messages.append(f"⚠️ {result['model_name']}: queue occupied.")
 
     return "\n".join(messages)
 
@@ -295,7 +295,7 @@ def cb_search(query, model_type, page, api_key, nsfw):
 
     items = data.get("items", [])
     if not items:
-        return gr.update(value=[]), "Aucun résultat."
+        return gr.update(value=[]), "No results."
 
     rows = [
         [
@@ -308,7 +308,7 @@ def cb_search(query, model_type, page, api_key, nsfw):
         for m in items
     ]
     total = data.get("metadata", {}).get("totalItems", "?")
-    return gr.update(value=rows), f"🔍 {len(rows)} résultats (total : {total})"
+    return gr.update(value=rows), f"🔍 {len(rows)} results (total: {total})"
 
 
 # ── Callbacks Batch ──────────────────────────────────────────────────────────
@@ -316,13 +316,13 @@ def cb_search(query, model_type, page, api_key, nsfw):
 def cb_batch_analyze(urls_text: str, api_key: str, custom_dir: str):
     urls = [u.strip() for u in urls_text.strip().splitlines() if u.strip()]
     if not urls:
-        return "❌ Aucune URL fournie."
+        return "❌ No URLs provided."
 
     bq = downloader.get_batch_queue()
     if bq.running:
-        return "⚠️ Un lot est déjà en cours de téléchargement."
+        return "⚠️ A batch is already downloading."
     if _resolve["running"]:
-        return "⚠️ Une analyse est déjà en cours."
+        return "⚠️ Analysis already in progress."
 
     bq.clear()
     _resolve["running"] = True
@@ -332,34 +332,34 @@ def cb_batch_analyze(urls_text: str, api_key: str, custom_dir: str):
 
     def _run():
         for url in urls:
-            _resolve["log"].append(f"Analyse : {url[:70]}…")
+            _resolve["log"].append(f"Analyzing: {url[:70]}...")
             model_id, version_id = api.parse_model_url(url)
             if not model_id:
-                _resolve["log"].append(f"  ❌ URL invalide.")
+                _resolve["log"].append(f"  ❌ Invalid URL.")
                 _resolve["done"] += 1
                 continue
 
             try:
                 model_info = api.fetch_model_info(model_id, api_key)
             except api.CivitaiAPIError as exc:
-                _resolve["log"].append(f"  ❌ API : {exc}")
+                _resolve["log"].append(f"  ❌ API: {exc}")
                 _resolve["done"] += 1
                 continue
 
             versions = api.extract_versions(model_info)
             if not versions:
-                _resolve["log"].append(f"  ❌ Aucune version : {model_info.get('name','?')}")
+                _resolve["log"].append(f"  ❌ No versions: {model_info.get('name','?')}")
                 _resolve["done"] += 1
                 continue
 
-            # Sélection de la version
+            # Select version
             version = versions[0]
             if version_id:
                 match = next((v for v in versions if str(v["id"]) == str(version_id)), None)
                 if match:
                     version = match
 
-            # Sélection du meilleur fichier : safetensors type Model en priorité
+            # Select best file: Model-type safetensors first
             files = version["files"]
             best = (
                 next((f for f in files if f["name"].endswith(".safetensors") and f.get("type", "") == "Model"), None)
@@ -376,7 +376,7 @@ def cb_batch_analyze(urls_text: str, api_key: str, custom_dir: str):
                 version_name = version.get("name", ""),
                 filename     = best["name"],
                 size_kb      = best.get("size_kb", 0),
-                status       = "en attente",
+                status       = "pending",
                 _dl_url      = best["url"],
                 _sha256      = best.get("sha256", ""),
                 _dest_dir    = dest_dir,
@@ -391,48 +391,48 @@ def cb_batch_analyze(urls_text: str, api_key: str, custom_dir: str):
         _resolve["running"] = False
 
     threading.Thread(target=_run, daemon=True).start()
-    return f"⏳ Analyse de {len(urls)} URL(s)…"
+    return f"⏳ Analyzing {len(urls)} URL(s)..."
 
 
 def cb_batch_start(api_key: str):
     bq = downloader.get_batch_queue()
     if bq.running:
-        return "⚠️ Déjà en cours."
+        return "⚠️ Already in progress."
     if _resolve["running"]:
-        return "⚠️ Attendez la fin de l'analyse."
+        return "⚠️ Wait for analysis to finish."
     if not bq.items:
-        return "❌ Aucun modèle en liste. Analysez d'abord les URLs."
-    pending = sum(1 for i in bq.items if i.status == "en attente")
+        return "❌ No models. Analyze URLs first."
+    pending = sum(1 for i in bq.items if i.status == "pending")
     if not pending:
-        return "ℹ️ Aucun élément en attente."
+        return "ℹ️ No pending items."
     bq.start(api_key)
-    return f"⏳ Lot démarré — {pending} téléchargement(s) en file…"
+    return f"⏳ Batch started — {pending} download(s) in queue..."
 
 
 def cb_batch_cancel():
     bq = downloader.get_batch_queue()
     if bq.running:
         bq.cancel()
-        return "🛑 Annulation en cours…"
-    return "ℹ️ Aucun lot actif."
+        return "🛑 Cancelling..."
+    return "ℹ️ No active batch."
 
 
 def cb_batch_clear():
     bq = downloader.get_batch_queue()
     if bq.running:
-        return "⚠️ Impossible de vider pendant le téléchargement."
+        return "⚠️ Cannot clear while downloading."
     bq.clear()
     _resolve["log"] = []
-    return "🗑️ Liste vidée."
+    return "🗑️ List cleared."
 
 
 def cb_poll_batch():
     bq = downloader.get_batch_queue()
 
-    # Mise à jour de la progression de l'item en cours
+    # Update current item progress
     if bq._current_task:
         for item in bq.items:
-            if item.status == "téléchargement":
+            if item.status == "downloading":
                 item.progress = bq._current_task.progress
                 break
 
@@ -446,20 +446,20 @@ def cb_poll_batch():
     log       = "\n".join(log_lines)
 
     if bq.running:
-        done   = sum(1 for i in bq.items if i.status == "terminé")
-        status = f"⏳ {done}/{len(bq.items)} terminé(s)…"
+        done   = sum(1 for i in bq.items if i.status == "completed")
+        status = f"⏳ {done}/{len(bq.items)} completed..."
     elif _resolve["running"]:
-        status = f"🔍 Analyse {_resolve['done']}/{_resolve['total']}…"
+        status = f"🔍 Analyzing {_resolve['done']}/{_resolve['total']}..."
     elif bq.items:
-        done   = sum(1 for i in bq.items if i.status == "terminé")
-        errors = sum(1 for i in bq.items if i.status == "erreur")
+        done   = sum(1 for i in bq.items if i.status == "completed")
+        errors = sum(1 for i in bq.items if i.status == "error")
         if done + errors == len(bq.items) and bq.log:
-            status = f"✅ Lot terminé : {done} OK, {errors} erreur(s)"
+            status = f"✅ Batch completed: {done} OK, {errors} error(s)"
         else:
-            pending = sum(1 for i in bq.items if i.status == "en attente")
-            status  = f"📋 {len(bq.items)} modèle(s) — {pending} en attente"
+            pending = sum(1 for i in bq.items if i.status == "pending")
+            status  = f"📋 {len(bq.items)} model(s) — {pending} pending"
     else:
-        status = "💤 Liste vide"
+        status = "💤 List empty"
 
     return gr.update(value=rows), gr.update(value=log), gr.update(value=status)
 
@@ -472,21 +472,21 @@ def build_ui():
 
         with gr.Row():
             api_key_input = gr.Textbox(
-                label="Clé API CivitAI",
-                placeholder="Optionnelle — obligatoire pour les modèles restreints/NSFW",
+                label="CivitAI API Key",
+                placeholder="Optional - required for restricted/NSFW models",
                 type="password", scale=3,
             )
 
-        with gr.Tab("⬇️ Télécharger"):
+        with gr.Tab("⬇️ Download"):
             _tab_download(api_key_input)
 
         with gr.Tab("📦 Batch"):
             _tab_batch(api_key_input)
 
-        with gr.Tab("🔍 Recherche"):
+        with gr.Tab("🔍 Search"):
             _tab_search(api_key_input)
 
-        with gr.Tab("🔄 Scan & MAJ"):
+        with gr.Tab("🔄 Scan & Update"):
             _tab_scan(api_key_input)
 
     return ui
@@ -500,41 +500,41 @@ def _load_css() -> str:
 
 
 def _tab_download(api_key_input):
-    gr.Markdown("### Télécharger un modèle depuis une URL ou un ID CivitAI")
+    gr.Markdown("### Download a model from a CivitAI URL or ID")
 
-    url_input    = gr.Textbox(label="URL ou ID", placeholder="https://civitai.com/models/12345")
-    fetch_btn    = gr.Button("🔍 Récupérer les infos", variant="primary")
+    url_input    = gr.Textbox(label="URL or ID", placeholder="https://civitai.com/models/12345")
+    fetch_btn    = gr.Button("🔍 Fetch Info", variant="primary")
     model_status = gr.Markdown("")
     model_summary = gr.Markdown("")
 
     with gr.Row():
         version_dd = gr.Dropdown(label="Version", choices=[], interactive=True, scale=2)
-        file_dd    = gr.Dropdown(label="Fichier",  choices=[], interactive=True, scale=2)
+        file_dd    = gr.Dropdown(label="File",  choices=[], interactive=True, scale=2)
 
     trigger_words_box = gr.Textbox(label="Trigger words", interactive=False)
 
     with gr.Accordion("⚙️ Options", open=False):
         custom_dir_input = gr.Textbox(
-            label="Dossier de destination",
-            placeholder="Laissez vide pour auto-détection",
+            label="Destination folder",
+            placeholder="Leave empty for auto-detection",
         )
-        preview_checkbox = gr.Checkbox(label="Télécharger la preview", value=True)
+        preview_checkbox = gr.Checkbox(label="Download preview", value=True)
 
     with gr.Row():
-        dl_btn     = gr.Button("⬇️ Télécharger", variant="primary")
-        cancel_btn = gr.Button("🛑 Annuler",      variant="stop")
+        dl_btn     = gr.Button("⬇️ Download", variant="primary")
+        cancel_btn = gr.Button("🛑 Cancel",      variant="stop")
 
     dl_result = gr.Markdown("")
 
-    with gr.Accordion("📋 Progression", open=True):
+    with gr.Accordion("📋 Progress", open=True):
         dl_progress = gr.Slider(minimum=0, maximum=1, value=0,
-                                label="Progression", interactive=False)
-        dl_status   = gr.Markdown("💤 En attente")
+                                label="Progress", interactive=False)
+        dl_status   = gr.Markdown("💤 Waiting")
         dl_log      = gr.Textbox(label="Logs", lines=8, interactive=False, max_lines=15)
 
     versions_cache = gr.State([])
     model_type     = gr.State("Other")
-    poll_timer     = gr.Timer(value=1.5)
+    poll_timer     = gr.Timer(value=2.5)
 
     fetch_btn.click(
         fn=cb_fetch_model,
@@ -558,44 +558,44 @@ def _tab_download(api_key_input):
 
 
 def _tab_batch(api_key_input):
-    gr.Markdown("### Télécharger plusieurs modèles d'un coup")
+    gr.Markdown("### Download multiple models at once")
     gr.Markdown(
-        "Collez une URL CivitAI par ligne. "
-        "L'extension sélectionne automatiquement la dernière version "
-        "et le meilleur fichier `.safetensors` disponible."
+        "Paste one CivitAI URL per line. "
+        "The extension automatically selects the latest version "
+        "and best available `.safetensors` file."
     )
 
     urls_input = gr.Textbox(
-        label="URLs CivitAI (une par ligne)",
+        label="CivitAI URLs (one per line)",
         placeholder="https://civitai.com/models/12345\nhttps://civitai.com/models/67890",
         lines=6,
     )
 
     with gr.Accordion("⚙️ Options", open=False):
         custom_dir_batch = gr.Textbox(
-            label="Dossier de destination",
-            placeholder="Laissez vide pour auto-détection selon le type de modèle",
+            label="Destination folder",
+            placeholder="Leave empty for auto-detection by model type",
         )
 
     with gr.Row():
-        analyze_btn = gr.Button("🔍 Analyser les URLs", variant="primary")
-        start_btn   = gr.Button("⬇️ Télécharger tout",  variant="primary")
-        cancel_btn  = gr.Button("🛑 Annuler",           variant="stop")
-        clear_btn   = gr.Button("🗑️ Vider la liste")
+        analyze_btn = gr.Button("🔍 Analyze URLs", variant="primary")
+        start_btn   = gr.Button("⬇️ Download tout",  variant="primary")
+        cancel_btn  = gr.Button("🛑 Cancel",           variant="stop")
+        clear_btn   = gr.Button("🗑️ Clear List")
 
-    batch_status = gr.Markdown("💤 Liste vide")
+    batch_status = gr.Markdown("💤 Empty list")
 
     batch_table = gr.Dataframe(
-        headers=["Modèle", "Fichier", "Taille", "Statut", "Progression"],
+        headers=["Model", "File", "Size", "Status", "Progress"],
         datatype=["str", "str", "str", "str", "str"],
         interactive=False,
         wrap=True,
-        label="File de téléchargement",
+        label="Download Queue",
     )
 
     batch_log = gr.Textbox(label="Logs", lines=8, interactive=False, max_lines=15)
 
-    batch_timer = gr.Timer(value=1.5)
+    batch_timer = gr.Timer(value=2.5)
 
     analyze_btn.click(
         fn=cb_batch_analyze,
@@ -613,10 +613,10 @@ def _tab_batch(api_key_input):
 
 
 def _tab_search(api_key_input):
-    gr.Markdown("### Rechercher des modèles sur CivitAI")
+    gr.Markdown("### Search for models on CivitAI")
 
     with gr.Row():
-        search_input = gr.Textbox(label="Mots-clés", placeholder="ex : realistic portrait lora…", scale=3)
+        search_input = gr.Textbox(label="Keywords", placeholder="e.g., realistic portrait lora...", scale=3)
         type_filter  = gr.Dropdown(
             label="Type",
             choices=["Tous", "Checkpoint", "LORA", "TextualInversion", "VAE", "ControlNet"],
@@ -625,10 +625,10 @@ def _tab_search(api_key_input):
         nsfw_toggle  = gr.Checkbox(label="NSFW", value=False, scale=1)
         page_input   = gr.Number(label="Page", value=1, minimum=1, precision=0, scale=1)
 
-    search_btn    = gr.Button("🔍 Rechercher", variant="primary")
+    search_btn    = gr.Button("🔍 Search", variant="primary")
     search_status = gr.Markdown("")
     search_results = gr.Dataframe(
-        headers=["Nom", "Type", "Téléchargements", "Note", "URL"],
+        headers=["Name", "Type", "Downloads", "Rating", "URL"],
         datatype=["str", "str", "number", "number", "str"],
         interactive=False, wrap=True,
     )
@@ -641,34 +641,34 @@ def _tab_search(api_key_input):
 
 
 def _tab_scan(api_key_input):
-    gr.Markdown("#### 📂 Scan des modèles locaux")
+    gr.Markdown("#### 📂 Scan local models")
     gr.Markdown(
-        "Calcule le SHA256 de chaque modèle, interroge CivitAI "
-        "et génère un `.civitai.info` + preview pour chaque modèle trouvé."
+        "Calculates SHA256 of each model, queries CivitAI "
+        "and generates `.civitai.info` + preview for each found model."
     )
 
     with gr.Row():
-        skip_existing_cb = gr.Checkbox(label="Ignorer les modèles déjà scannés", value=True)
-        scan_btn         = gr.Button("🔍 Lancer le scan", variant="primary")
-        scan_cancel_btn  = gr.Button("🛑 Arrêter",        variant="stop")
+        skip_existing_cb = gr.Checkbox(label="Skip already scanned models", value=True)
+        scan_btn         = gr.Button("🔍 Start Scan", variant="primary")
+        scan_cancel_btn  = gr.Button("🛑 Stop",        variant="stop")
 
     scan_status   = gr.Markdown("💤")
     scan_progress = gr.Slider(minimum=0, maximum=1, value=0,
-                              label="Progression", interactive=False)
+                              label="Progress", interactive=False)
     scan_log      = gr.Textbox(label="Logs", lines=8, interactive=False, max_lines=20)
 
     gr.Markdown("---")
-    gr.Markdown("#### 🆕 Vérifier les nouvelles versions")
+    gr.Markdown("#### 🆕 Check for updates")
 
-    update_btn    = gr.Button("🔄 Vérifier les mises à jour", variant="primary")
+    update_btn    = gr.Button("🔄 Check Updates", variant="primary")
     update_status = gr.Markdown("💤")
-    update_log    = gr.Textbox(label="Logs MAJ", lines=5, interactive=False)
+    update_log    = gr.Textbox(label="Update Logs", lines=5, interactive=False)
     update_table  = gr.Dataframe(
-        headers=["Modèle", "Version locale", "Nouvelle version", "Type", "Chemin"],
+        headers=["Model", "Local Version", "New Version", "Type", "Path"],
         datatype=["str", "str", "str", "str", "str"],
-        interactive=True, label="Mises à jour disponibles",
+        interactive=True, label="Available updates",
     )
-    dl_update_btn    = gr.Button("⬇️ Télécharger les sélectionnées", variant="primary")
+    dl_update_btn    = gr.Button("⬇️ Download Selected", variant="primary")
     dl_update_result = gr.Markdown("")
 
     selected_rows = gr.State([])

@@ -1,40 +1,40 @@
 # 🐘 SD Forge — CivitAI Helper
 
-Extension pour **Stable Diffusion Forge** permettant de télécharger,
-scanner et mettre à jour vos modèles depuis CivitAI.
+A **Stable Diffusion Forge** extension for downloading, scanning, and updating your models directly from CivitAI.
 
 ## Installation
 
 ```bash
-cd <racine_SD_Forge>/extensions/
-git clone <url_du_repo> sd-forge-civitai-helper
-# Relancez Forge — install.py s'exécute automatiquement
+cd <SD_Forge_root>/extensions/
+git clone <repo_url> sd-forge-civitai-helper
+# Restart Forge — install.py runs automatically
 ```
 
-Ou via l'interface : **Extensions → Install from URL**.
+Or via the UI: **Extensions → Install from URL**.
 
-## Fonctionnalités
+## Features
 
-| Onglet | Fonctionnalité |
+| Tab | Functionality |
 |---|---|
-| ⬇️ Télécharger | Téléchargement par URL/ID, sélection version/fichier, resume, vérification SHA256, preview |
-| 🔍 Recherche | Recherche par mot-clé, filtre par type, pagination |
-| 🔄 Scan & MAJ | Scan SHA256 des modèles locaux, génération `.civitai.info`, détection de nouvelles versions |
+| ⬇️ Download | Download via URL/ID, version/file selection, resume, SHA256 verification, preview |
+| 🔍 Search | Keyword search, type filtering, pagination |
+| 📦 Batch | Batch download multiple models, auto-selects latest version & best `.safetensors` file |
+| 🔄 Scan & Update | Local SHA256 scanning, `.civitai.info` generation, detects newer versions |
 
-## Clé API
+## API Key
 
-Optionnelle pour les modèles publics.
-Obligatoire pour les modèles restreints ou NSFW.
+Optional for public models.
+Required for restricted/NSFW content.
 
-Obtenez-la sur : https://civitai.com/user/account
+Get your key at: https://civitai.com/user/account
 
-Vous pouvez aussi la définir en variable d'environnement :
+You can also set it as an environment variable:
 ```bash
-export CIVITAI_API_KEY=votre_clé
+export CIVITAI_API_KEY=your_key
 ```
 
-## Structure des fichiers générés
+## Generated Files
 
-Pour chaque modèle scanné, l'extension crée :
-- `nom_du_modele.civitai.info` — métadonnées JSON
-- `nom_du_modele.preview.jpg` — image de preview
+For each scanned model, the extension creates:
+- `model_name.civitai.info` — JSON metadata
+- `model_name.preview.jpg` — preview image

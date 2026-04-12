@@ -65,12 +65,27 @@ class DownloadQueue:
         headers["User-Agent"] = "sd-forge-civitai-helper/2.0"
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        if resume_pos:
+
+        # Try to resume if file exists
+        use_resume = resume_pos > 0
+        if use_resume:
             headers["Range"] = f"bytes={resume_pos}-"
             self.append_log(f"Resume depuis {utils.format_size(resume_pos / 1024)}…")
 
         try:
             resp = requests.get(task.url, headers=headers, stream=True, timeout=30)
+
+            # Handle 416 Range Not Satisfiable (expired URL or range mismatch)
+            if resp.status_code == 416 and use_resume:
+                self.append_log("URL expired or range invalid, restarting download from beginning…")
+                dest.unlink(missing_ok=True)
+                resume_pos = 0
+                use_resume = False
+                headers.pop("Range", None)
+                task.downloaded_bytes = 0
+                # Retry without Range
+                resp = requests.get(task.url, headers=headers, stream=True, timeout=30)
+
             resp.raise_for_status()
         except requests.exceptions.RequestException as exc:
             task.error = str(exc)
