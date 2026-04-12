@@ -490,7 +490,7 @@ def _tab_scan(api_key_input):
 # ── Enregistrement ───────────────────────────────────────────────────────────
 
 def on_ui_tabs():
-    return [(build_ui(), "CivitAI Helper", "civitai_helper")]
+    return [(build_ui(), "🐘 CivitAI Helper", "sd_forge_civitai_helper")]
 
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
