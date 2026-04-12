@@ -1,6 +1,7 @@
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -163,3 +164,126 @@ _queue = DownloadQueue()
 
 def get_queue() -> DownloadQueue:
     return _queue
+
+
+# ── Batch download ────────────────────────────────────────────────────────────
+
+@dataclass
+class BatchItem:
+    url:          str
+    model_name:   str   = ""
+    version_name: str   = ""
+    filename:     str   = ""
+    size_kb:      float = 0.0
+    status:       str   = "en attente"   # en attente / téléchargement / terminé / erreur / annulé
+    progress:     float = 0.0
+    error:        str   = ""
+    # ── internal ──
+    _dl_url:       str              = field(default="",   repr=False)
+    _sha256:       str              = field(default="",   repr=False)
+    _dest_dir:     Optional[Path]   = field(default=None, repr=False)
+    _version_data: Optional[dict]   = field(default=None, repr=False)
+    _model_info:   Optional[dict]   = field(default=None, repr=False)
+
+
+class BatchQueue:
+    def __init__(self) -> None:
+        self.items:         list[BatchItem]       = []
+        self.running:       bool                  = False
+        self._cancel:       bool                  = False
+        self.log:           list[str]             = []
+        self._current_task: Optional[DownloadTask] = None
+
+    def append_log(self, msg: str) -> None:
+        self.log.append(msg)
+        if len(self.log) > 500:
+            self.log = self.log[-500:]
+        print(f"[CivitAI Batch] {msg}")
+
+    def add_item(self, item: BatchItem) -> None:
+        self.items.append(item)
+
+    def clear(self) -> None:
+        if not self.running:
+            self.items = []
+            self.log   = []
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    @property
+    def summary(self) -> str:
+        done   = sum(1 for i in self.items if i.status == "terminé")
+        errors = sum(1 for i in self.items if i.status == "erreur")
+        total  = len(self.items)
+        return f"{done}/{total} terminé(s), {errors} erreur(s)"
+
+    def start(self, api_key: str = "") -> None:
+        if self.running:
+            return
+        if not any(i.status == "en attente" for i in self.items):
+            return
+        self._cancel = False
+        threading.Thread(target=self._run, args=(api_key,), daemon=True).start()
+
+    def _run(self, api_key: str) -> None:
+        self.running = True
+        for item in self.items:
+            if self._cancel:
+                if item.status == "en attente":
+                    item.status = "annulé"
+                continue
+            if item.status != "en attente":
+                continue
+
+            item.status = "téléchargement"
+            self.append_log(f"Début : {item.filename}")
+
+            if not item._dl_url or item._dest_dir is None:
+                item.status = "erreur"
+                item.error  = "Configuration manquante."
+                self.append_log(f"[ERR] {item.filename} : {item.error}")
+                continue
+
+            dest_path = item._dest_dir / item.filename
+            task = DownloadTask(
+                url             = item._dl_url,
+                dest            = dest_path,
+                filename        = item.filename,
+                sha256_expected = item._sha256,
+            )
+            self._current_task = task
+
+            # Synchronous download — runs inside this background thread
+            _dq = DownloadQueue()
+            _dq.download(
+                task             = task,
+                api_key          = api_key,
+                version_data     = item._version_data,
+                model_info       = item._model_info,
+                download_preview = True,
+            )
+
+            self._current_task = None
+
+            if task.error:
+                item.status = "erreur"
+                item.error  = task.error
+                self.append_log(f"[ERR] {item.filename} : {task.error}")
+            elif task.cancelled:
+                item.status = "annulé"
+                self.append_log(f"[ANN] {item.filename}")
+            else:
+                item.status   = "terminé"
+                item.progress = 1.0
+                self.append_log(f"✅ {item.filename}")
+
+        self.running = False
+        self.append_log(f"Lot terminé : {self.summary}")
+
+
+_batch_queue = BatchQueue()
+
+
+def get_batch_queue() -> BatchQueue:
+    return _batch_queue
