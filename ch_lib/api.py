@@ -3,9 +3,9 @@ import re
 import requests
 from typing import Any
 
-CIVITAI_API_BASE = "https://civitai.com/api/v1"
+CIVITAI_API_BASE = "https://civitai.red/api/v1"
 CIVITAI_URL_RE   = re.compile(
-    r"(?:https?://)?civitai\.com/models/(\d+)(?:.*?modelVersionId=(\d+))?"
+    r"(?:https?://)?(?:civitai\.com|civitai\.red)/models/(\d+)(?:.*?modelVersionId=(\d+))?"
 )
 _REQUEST_TIMEOUT = 20
 
@@ -90,7 +90,7 @@ def extract_versions(model_info: dict) -> list[dict]:
         files = [
             {
                 "name":    f.get("name", "unknown"),
-                "url":     f.get("downloadUrl", ""),
+                "url":     f.get("downloadUrl", "").replace("civitai.com", "civitai.red"),
                 "size_kb": f.get("sizeKB", 0),
                 "type":    f.get("type", "Model"),
                 "format":  f.get("metadata", {}).get("format", ""),

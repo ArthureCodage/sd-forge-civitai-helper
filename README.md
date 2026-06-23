@@ -2,6 +2,9 @@
 
 A **Stable Diffusion Forge** extension for downloading, scanning, and updating your models directly from CivitAI.
 
+> [!NOTE]
+> **Domain Update**: This extension has been updated to use **civitai.red** as the main API base and download domain. This resolves connection/DNS blocking issues and ensures both SFW and NSFW content are accessible out of the box.
+
 ## Installation
 
 ```bash
@@ -26,7 +29,7 @@ Or via the UI: **Extensions → Install from URL**.
 Optional for public models.
 Required for restricted/NSFW content.
 
-Get your key at: https://civitai.com/user/account
+Get your key at: https://civitai.red/user/account
 
 You can also set it as an environment variable:
 ```bash

@@ -7,7 +7,7 @@
  */
 
 (function () {
-  const CIVITAI_URL_RE = /(?:https?:\/\/)?civitai\.com\/models\/\d+/;
+  const CIVITAI_URL_RE = /(?:https?:\/\/)?(?:civitai\.com|civitai\.red)\/models\/\d+/;
 
   // ── Boutons cartes Extra Networks ─────────────────────────────────────────
 

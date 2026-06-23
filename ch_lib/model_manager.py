@@ -35,6 +35,7 @@ def is_not_on_civitai(info: dict | None) -> bool:
 
 def save_preview_image(model_path: Path, image_url: str) -> Path | None:
     import requests
+    image_url = image_url.replace("civitai.com", "civitai.red")
     ext = image_url.rsplit(".", 1)[-1].split("?")[0].lower()
     if ext not in ("png", "jpg", "jpeg", "webp"):
         ext = "jpg"

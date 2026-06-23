@@ -303,7 +303,7 @@ def cb_search(query, model_type, page, api_key, nsfw):
             m.get("type", ""),
             m.get("stats", {}).get("downloadCount", 0),
             round(m.get("stats", {}).get("rating", 0), 2),
-            f"https://civitai.com/models/{m['id']}",
+            f"https://civitai.red/models/{m['id']}",
         ]
         for m in items
     ]
@@ -502,7 +502,7 @@ def _load_css() -> str:
 def _tab_download(api_key_input):
     gr.Markdown("### Download a model from a CivitAI URL or ID")
 
-    url_input    = gr.Textbox(label="URL or ID", placeholder="https://civitai.com/models/12345")
+    url_input    = gr.Textbox(label="URL or ID", placeholder="https://civitai.red/models/12345")
     fetch_btn    = gr.Button("🔍 Fetch Info", variant="primary")
     model_status = gr.Markdown("")
     model_summary = gr.Markdown("")
@@ -567,7 +567,7 @@ def _tab_batch(api_key_input):
 
     urls_input = gr.Textbox(
         label="CivitAI URLs (one per line)",
-        placeholder="https://civitai.com/models/12345\nhttps://civitai.com/models/67890",
+        placeholder="https://civitai.red/models/12345\nhttps://civitai.red/models/67890",
         lines=6,
     )
 
