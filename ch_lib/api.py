@@ -1,9 +1,11 @@
 import os
 import re
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
 import requests
 from typing import Any
 
-CIVITAI_API_BASE = "https://civitai.red/api/v1"
+CIVITAI_API_BASE = "https://civitai.com/api/v1"
 CIVITAI_URL_RE   = re.compile(
     r"(?:https?://)?(?:civitai\.com|civitai\.red)/models/(\d+)(?:.*?modelVersionId=(\d+))?"
 )
@@ -20,6 +22,34 @@ def _build_headers(api_key: str | None = None) -> dict[str, str]:
     if key:
         headers["Authorization"] = f"Bearer {key}"
     return headers
+
+
+def with_api_token(url: str, api_key: str | None = None) -> str:
+    """Attach a Civitai API token to /api/download URLs.
+
+    Civitai authenticated downloads are more reliable with the token in the
+    query string than with only an Authorization header, especially now that
+    both civitai.com and civitai.red front doors exist and downloads redirect
+    to pre-signed storage URLs. Non-Civitai URLs are left untouched.
+    """
+    key = (api_key or os.environ.get("CIVITAI_API_KEY", "")).strip()
+    if not key:
+        return url
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in {"civitai.com", "civitai.red"} and not (
+        host.endswith(".civitai.com") or host.endswith(".civitai.red")
+    ):
+        return url
+    if not parsed.path.startswith("/api/download/"):
+        return url
+
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if query.get("token"):
+        return url
+    query["token"] = key
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 def _get(url: str, api_key: str | None = None, **kwargs) -> dict:
@@ -90,7 +120,7 @@ def extract_versions(model_info: dict) -> list[dict]:
         files = [
             {
                 "name":    f.get("name", "unknown"),
-                "url":     f.get("downloadUrl", "").replace("civitai.com", "civitai.red"),
+                "url":     f.get("downloadUrl", ""),
                 "size_kb": f.get("sizeKB", 0),
                 "type":    f.get("type", "Model"),
                 "format":  f.get("metadata", {}).get("format", ""),

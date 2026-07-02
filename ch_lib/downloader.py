@@ -61,10 +61,8 @@ class DownloadQueue:
 
         # Resume support
         resume_pos = dest.stat().st_size if dest.exists() else 0
-        headers    = utils._build_headers(api_key) if hasattr(utils, "_build_headers") else {}
-        headers["User-Agent"] = "sd-forge-civitai-helper/2.0"
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        headers    = api._build_headers(api_key)
+        download_url = api.with_api_token(task.url, api_key)
 
         # Try to resume if file exists
         use_resume = resume_pos > 0
@@ -73,7 +71,7 @@ class DownloadQueue:
             self.append_log(f"Resume depuis {utils.format_size(resume_pos / 1024)}…")
 
         try:
-            resp = requests.get(task.url, headers=headers, stream=True, timeout=30)
+            resp = requests.get(download_url, headers=headers, stream=True, timeout=30)
 
             # Handle 416 Range Not Satisfiable (expired URL or range mismatch)
             if resp.status_code == 416 and use_resume:
@@ -84,7 +82,7 @@ class DownloadQueue:
                 headers.pop("Range", None)
                 task.downloaded_bytes = 0
                 # Retry without Range
-                resp = requests.get(task.url, headers=headers, stream=True, timeout=30)
+                resp = requests.get(download_url, headers=headers, stream=True, timeout=30)
 
             resp.raise_for_status()
         except requests.exceptions.RequestException as exc:
@@ -190,7 +188,7 @@ class BatchItem:
     version_name: str   = ""
     filename:     str   = ""
     size_kb:      float = 0.0
-    status:       str   = "en attente"   # en attente / téléchargement / terminé / erreur / annulé
+    status:       str   = "pending"      # pending / downloading / completed / error / cancelled
     progress:     float = 0.0
     error:        str   = ""
     # ── internal ──
@@ -228,15 +226,15 @@ class BatchQueue:
 
     @property
     def summary(self) -> str:
-        done   = sum(1 for i in self.items if i.status == "terminé")
-        errors = sum(1 for i in self.items if i.status == "erreur")
+        done   = sum(1 for i in self.items if i.status == "completed")
+        errors = sum(1 for i in self.items if i.status == "error")
         total  = len(self.items)
         return f"{done}/{total} terminé(s), {errors} erreur(s)"
 
     def start(self, api_key: str = "") -> None:
         if self.running:
             return
-        if not any(i.status == "en attente" for i in self.items):
+        if not any(i.status == "pending" for i in self.items):
             return
         self._cancel = False
         threading.Thread(target=self._run, args=(api_key,), daemon=True).start()
@@ -245,17 +243,17 @@ class BatchQueue:
         self.running = True
         for item in self.items:
             if self._cancel:
-                if item.status == "en attente":
-                    item.status = "annulé"
+                if item.status == "pending":
+                    item.status = "cancelled"
                 continue
-            if item.status != "en attente":
+            if item.status != "pending":
                 continue
 
-            item.status = "téléchargement"
+            item.status = "downloading"
             self.append_log(f"Début : {item.filename}")
 
             if not item._dl_url or item._dest_dir is None:
-                item.status = "erreur"
+                item.status = "error"
                 item.error  = "Configuration manquante."
                 self.append_log(f"[ERR] {item.filename} : {item.error}")
                 continue
@@ -282,14 +280,14 @@ class BatchQueue:
             self._current_task = None
 
             if task.error:
-                item.status = "erreur"
+                item.status = "error"
                 item.error  = task.error
                 self.append_log(f"[ERR] {item.filename} : {task.error}")
             elif task.cancelled:
-                item.status = "annulé"
+                item.status = "cancelled"
                 self.append_log(f"[ANN] {item.filename}")
             else:
-                item.status   = "terminé"
+                item.status   = "completed"
                 item.progress = 1.0
                 self.append_log(f"✅ {item.filename}")
 
