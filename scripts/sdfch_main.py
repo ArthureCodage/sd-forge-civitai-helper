@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gradio as gr
 from modules import script_callbacks
 
-from ch_lib import api, utils, model_manager, downloader
+from ch_lib import api, utils, model_manager, downloader, settings
 from ch_lib.downloader import DownloadTask, BatchItem
 
 # ── Batch analysis phase state ─────────────────────────────────────────
@@ -18,6 +18,7 @@ _resolve: dict = {"running": False, "total": 0, "done": 0, "log": []}
 # ── Callbacks Download ───────────────────────────────────────────────────────
 
 def cb_fetch_model(url_or_id: str, api_key: str):
+    api_key = settings.resolve_api_key(api_key)
     model_id, version_id = api.parse_model_url(url_or_id)
     if not model_id:
         return (
@@ -82,6 +83,7 @@ def cb_start_download(
     api_key, custom_dir, download_preview,
     versions_cache, model_type,
 ):
+    api_key = settings.resolve_api_key(api_key)
     if not versions_cache:
         return "❌ Fetch model info first."
     if not version_label or not file_name:
@@ -164,6 +166,7 @@ def cb_poll_download():
 # ── Callbacks Scan ───────────────────────────────────────────────────────────
 
 def cb_start_scan(api_key: str, skip_existing: bool):
+    api_key = settings.resolve_api_key(api_key)
     state = model_manager.get_scan_state()
     if state.running:
         return "⚠️ Scan already in progress."
@@ -201,6 +204,7 @@ def cb_poll_scan():
 # ── Callbacks MAJ ────────────────────────────────────────────────────────────
 
 def cb_check_updates(api_key: str):
+    api_key = settings.resolve_api_key(api_key)
     state = model_manager.get_update_state()
     if state.running:
         return "⚠️ Check already in progress.", []
@@ -236,6 +240,7 @@ def cb_poll_updates():
 
 
 def cb_download_update(selected_rows, api_key: str):
+    api_key = settings.resolve_api_key(api_key)
     state = model_manager.get_update_state()
     if not state.results or not selected_rows:
         return "❌ No rows selected."
@@ -284,6 +289,7 @@ def cb_download_update(selected_rows, api_key: str):
 # ── Callbacks Recherche ──────────────────────────────────────────────────────
 
 def cb_search(query, model_type, page, api_key, nsfw):
+    api_key = settings.resolve_api_key(api_key)
     try:
         data = api.search_models(
             query=query,
@@ -314,6 +320,7 @@ def cb_search(query, model_type, page, api_key, nsfw):
 # ── Callbacks Batch ──────────────────────────────────────────────────────────
 
 def cb_batch_analyze(urls_text: str, api_key: str, custom_dir: str):
+    api_key = settings.resolve_api_key(api_key)
     urls = [u.strip() for u in urls_text.strip().splitlines() if u.strip()]
     if not urls:
         return "❌ No URLs provided."
@@ -395,6 +402,7 @@ def cb_batch_analyze(urls_text: str, api_key: str, custom_dir: str):
 
 
 def cb_batch_start(api_key: str):
+    api_key = settings.resolve_api_key(api_key)
     bq = downloader.get_batch_queue()
     if bq.running:
         return "⚠️ Already in progress."
@@ -474,6 +482,7 @@ def build_ui():
             api_key_input = gr.Textbox(
                 label="CivitAI API Key",
                 placeholder="Optional - required for restricted/NSFW models",
+                value=settings.get_saved_api_key(),
                 type="password", scale=3,
             )
 
@@ -703,8 +712,12 @@ def _tab_scan(api_key_input):
 
 # ── Enregistrement ───────────────────────────────────────────────────────────
 
+def on_ui_settings():
+    settings.register_options()
+
+
 def on_ui_tabs():
     return [(build_ui(), "🐘 CivitAI Helper", "sd_forge_civitai_helper")]
 
-
+script_callbacks.on_ui_settings(on_ui_settings)
 script_callbacks.on_ui_tabs(on_ui_tabs)
