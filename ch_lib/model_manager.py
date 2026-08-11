@@ -49,45 +49,66 @@ def save_trigger_words(model_path: Path, trigger_words: list[str] | str) -> Path
 
 # ── Preview ──────────────────────────────────────────────────────────────────
 
-def save_preview_image(model_path: Path, image_url: str, api_key: str = "") -> Path | None:
+def save_preview_images(
+    model_path: Path,
+    image_urls: list[str] | str,
+    api_key: str = "",
+    max_count: int = 1,
+) -> Path | None:
     import requests
-    if not image_url:
+    if isinstance(image_urls, str):
+        urls = [image_urls]
+    elif isinstance(image_urls, list):
+        urls = [u for u in image_urls if isinstance(u, str) and u]
+    else:
+        urls = []
+    if not urls:
         return None
 
-    if image_url.startswith("//"):
-        image_url = "https:" + image_url
-
+    urls = urls[:max_count]
     headers = api._build_headers(api_key)
-    try:
-        resp = requests.get(image_url, headers=headers, timeout=20)
-        resp.raise_for_status()
+    first_saved = None
 
-        content_type = resp.headers.get("Content-Type", "").lower()
-        if "png" in content_type:
-            ext = "png"
-        elif "webp" in content_type:
-            ext = "webp"
-        elif "jpeg" in content_type or "jpg" in content_type:
-            ext = "jpg"
-        else:
-            url_ext = image_url.rsplit(".", 1)[-1].split("?")[0].lower()
-            ext = url_ext if url_ext in ("png", "jpg", "jpeg", "webp") else "jpg"
+    for idx, url in enumerate(urls):
+        if url.startswith("//"):
+            url = "https:" + url
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            resp.raise_for_status()
 
-        dest = utils.preview_file_path(model_path, ext)
-        dest.write_bytes(resp.content)
+            content_type = resp.headers.get("Content-Type", "").lower()
+            if "png" in content_type:
+                ext = "png"
+            elif "webp" in content_type:
+                ext = "webp"
+            elif "jpeg" in content_type or "jpg" in content_type:
+                ext = "jpg"
+            else:
+                url_ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
+                ext = url_ext if url_ext in ("png", "jpg", "jpeg", "webp") else "jpg"
 
-        # Save primary .ext file for extra network views if not present
-        primary_dest = model_path.with_suffix(f".{ext}")
-        if primary_dest != dest and not primary_dest.exists():
-            try:
-                primary_dest.write_bytes(resp.content)
-            except Exception:
-                pass
+            if idx == 0:
+                dest = utils.preview_file_path(model_path, ext)
+                primary = model_path.with_suffix(f".{ext}")
+                if primary != dest and not primary.exists():
+                    try:
+                        primary.write_bytes(resp.content)
+                    except Exception:
+                        pass
+            else:
+                dest = model_path.with_suffix(f".preview.{idx}.{ext}")
 
-        return dest
-    except Exception as exc:
-        print(f"[CivitAI Helper] Preview non téléchargée pour {model_path.name} : {exc}")
-        return None
+            dest.write_bytes(resp.content)
+            if idx == 0:
+                first_saved = dest
+        except Exception as exc:
+            print(f"[CivitAI Helper] Preview non téléchargée ({idx+1}/{len(urls)}) pour {model_path.name} : {exc}")
+
+    return first_saved
+
+
+def save_preview_image(model_path: Path, image_url: str, api_key: str = "") -> Path | None:
+    return save_preview_images(model_path, image_url, api_key=api_key, max_count=1)
 
 
 def has_preview(model_path: Path) -> bool:

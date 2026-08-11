@@ -5,8 +5,8 @@ from typing import Optional
 
 import requests
 
-from . import api, utils
-from .model_manager import save_info, save_preview_image, save_trigger_words
+from . import api, settings, utils
+from .model_manager import save_info, save_preview_image, save_preview_images, save_trigger_words
 
 
 @dataclass
@@ -151,15 +151,12 @@ class DownloadQueue:
             if not images and model_info:
                 images = model_info.get("images", [])
             if images:
-                img_url = None
-                for img in images:
-                    if isinstance(img, dict) and img.get("url"):
-                        img_url = img.get("url")
-                        break
-                if img_url:
-                    result = save_preview_image(dest, img_url, api_key=api_key)
+                urls = [img.get("url") for img in images if isinstance(img, dict) and img.get("url")]
+                if urls:
+                    max_cnt = settings.get_max_previews()
+                    result = save_preview_images(dest, urls, api_key=api_key, max_count=max_cnt)
                     if result:
-                        self.append_log(f"Preview : {result.name}")
+                        self.append_log(f"Preview(s) : {result.name}")
 
         self.running = False
 
