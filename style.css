@@ -1,38 +1,64 @@
-/* CivitAI Helper — Styles */
+/* CivitAI Helper — Modern Styles for SD Forge Neo */
 
 #civitai_helper_root {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  border-radius: 12px;
+  padding: 8px;
 }
 
-/* Boutons sur les cartes Extra Networks */
+#civitai_helper_root h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 12px;
+}
+
+/* Extra Networks Card Buttons */
 .ch-card-actions {
   position: absolute;
-  bottom: 4px;
-  right: 4px;
+  bottom: 6px;
+  right: 6px;
   display: flex;
-  gap: 4px;
+  gap: 6px;
   z-index: 10;
 }
 
 .ch-card-btn {
-  background: rgba(0, 0, 0, 0.65);
-  border: none;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 6px;
-  color: #fff;
+  color: #f8fafc;
   cursor: pointer;
-  font-size: 14px;
-  padding: 3px 6px;
-  transition: background 0.15s;
+  font-size: 13px;
+  padding: 4px 8px;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
 
 .ch-card-btn:hover {
-  background: rgba(249, 115, 22, 0.85);
+  background: #ea580c;
+  border-color: #f97316;
+  transform: translateY(-1px);
 }
 
-/* Logs */
+/* Logs Container */
 #civitai_helper_root textarea[readonly] {
-  font-family: "JetBrains Mono", "Fira Code", monospace;
-  font-size: 0.78rem;
-  background-color: #0f172a;
-  color: #94a3b8;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.82rem;
+  background-color: #020617;
+  color: #38bdf8;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+}
+
+/* Badges & Highlights */
+#civitai_helper_root code {
+  background-color: rgba(249, 115, 22, 0.15);
+  color: #fb923c;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
 }

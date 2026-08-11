@@ -3,7 +3,10 @@ import hashlib
 from pathlib import Path
 
 CIVITAI_INFO_SUFFIX = ".civitai.info"
-PREVIEW_SUFFIXES    = (".preview.png", ".preview.jpg", ".preview.jpeg", ".preview.webp")
+PREVIEW_SUFFIXES    = (
+    ".preview.png", ".preview.jpg", ".preview.jpeg", ".preview.webp",
+    ".png", ".jpg", ".jpeg", ".webp"
+)
 
 MODEL_TYPE_DIRS: dict[str, str] = {
     "Checkpoint":        "models/Stable-diffusion",

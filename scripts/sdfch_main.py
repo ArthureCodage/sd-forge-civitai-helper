@@ -23,21 +23,21 @@ def cb_fetch_model(url_or_id: str, api_key: str):
     if not model_id:
         return (
             "❌ Invalid URL or ID.", gr.update(choices=[]), gr.update(choices=[]),
-            "", "", [], "Other",
+            "", "", [], "Other", None,
         )
     try:
         model_info = api.fetch_model_info(model_id, api_key)
     except api.CivitaiAPIError as exc:
         return (
             f"❌ {exc}", gr.update(choices=[]), gr.update(choices=[]),
-            "", "", [], "Other",
+            "", "", [], "Other", None,
         )
 
     versions   = api.extract_versions(model_info)
     if not versions:
         return (
             "❌ No downloadable versions found.", gr.update(choices=[]),
-            gr.update(choices=[]), "", "", [], "Other",
+            gr.update(choices=[]), "", "", [], "Other", None,
         )
 
     # Pre-select version from URL if specified
@@ -52,10 +52,22 @@ def cb_fetch_model(url_or_id: str, api_key: str):
     trigger_words  = ", ".join(default_version.get("trained_words", []))
     model_type     = model_info.get("type", "Other")
 
+    cover_url = None
+    images = default_version.get("images", []) or model_info.get("images", [])
+    for img in images:
+        if isinstance(img, dict) and img.get("url"):
+            cover_url = img.get("url")
+            break
+
+    base_model = default_version.get("base_model") or "?"
+    stats = model_info.get("stats", {})
+    downloads = stats.get("downloadCount", 0)
+    rating = round(stats.get("rating", 0), 1)
+
     summary = (
-        f"**{model_info.get('name', '?')}** — "
-        f"Type: `{model_type}` — "
-        f"{len(versions)} version(s) available"
+        f"### 📦 **{model_info.get('name', '?')}**\n"
+        f"🏷️ **Type:** `{model_type}` | 🧩 **Base:** `{base_model}` | "
+        f"⬇️ **Downloads:** `{downloads:,}` | ⭐ **Rating:** `{rating}`"
     )
 
     return (
@@ -66,16 +78,23 @@ def cb_fetch_model(url_or_id: str, api_key: str):
         trigger_words,
         versions,
         model_type,
+        cover_url,
     )
 
 
 def cb_version_change(version_label: str, versions_cache: list):
     version = next((v for v in versions_cache if v["label"] == version_label), None)
     if not version:
-        return gr.update(choices=[]), ""
+        return gr.update(choices=[]), "", None
     file_names    = [f["name"] for f in version["files"]]
     trigger_words = ", ".join(version.get("trained_words", []))
-    return gr.update(choices=file_names, value=file_names[0] if file_names else None), trigger_words
+    cover_url = None
+    images = version.get("images", [])
+    for img in images:
+        if isinstance(img, dict) and img.get("url"):
+            cover_url = img.get("url")
+            break
+    return gr.update(choices=file_names, value=file_names[0] if file_names else None), trigger_words, cover_url
 
 
 def cb_start_download(
@@ -176,6 +195,19 @@ def cb_start_scan(api_key: str, skip_existing: bool):
         daemon=True,
     ).start()
     return "⏳ Scan started..."
+
+
+def cb_start_missing_previews(api_key: str):
+    api_key = settings.resolve_api_key(api_key)
+    state = model_manager.get_scan_state()
+    if state.running:
+        return "⚠️ Operation already in progress."
+    threading.Thread(
+        target=model_manager.download_missing_previews,
+        args=(api_key,),
+        daemon=True,
+    ).start()
+    return "⏳ Downloading missing previews..."
 
 
 def cb_cancel_scan():
@@ -309,7 +341,7 @@ def cb_search(query, model_type, page, api_key, nsfw):
             m.get("type", ""),
             m.get("stats", {}).get("downloadCount", 0),
             round(m.get("stats", {}).get("rating", 0), 2),
-            f"https://civitai.red/models/{m['id']}",
+            f"https://civitai.com/models/{m['id']}",
         ]
         for m in items
     ]
@@ -511,10 +543,14 @@ def _load_css() -> str:
 def _tab_download(api_key_input):
     gr.Markdown("### Download a model from a CivitAI URL or ID")
 
-    url_input    = gr.Textbox(label="URL or ID", placeholder="https://civitai.red/models/12345")
-    fetch_btn    = gr.Button("🔍 Fetch Info", variant="primary")
-    model_status = gr.Markdown("")
-    model_summary = gr.Markdown("")
+    with gr.Row():
+        with gr.Column(scale=3):
+            url_input    = gr.Textbox(label="URL or ID", placeholder="https://civitai.com/models/12345")
+            fetch_btn    = gr.Button("🔍 Fetch Info", variant="primary")
+            model_status = gr.Markdown("")
+            model_summary = gr.Markdown("")
+        with gr.Column(scale=2):
+            preview_img  = gr.Image(label="Cover Preview", interactive=False, height=240)
 
     with gr.Row():
         version_dd = gr.Dropdown(label="Version", choices=[], interactive=True, scale=2)
@@ -549,12 +585,12 @@ def _tab_download(api_key_input):
         fn=cb_fetch_model,
         inputs=[url_input, api_key_input],
         outputs=[model_status, version_dd, file_dd,
-                 model_summary, trigger_words_box, versions_cache, model_type],
+                 model_summary, trigger_words_box, versions_cache, model_type, preview_img],
     )
     version_dd.change(
         fn=cb_version_change,
         inputs=[version_dd, versions_cache],
-        outputs=[file_dd, trigger_words_box],
+        outputs=[file_dd, trigger_words_box, preview_img],
     )
     dl_btn.click(
         fn=cb_start_download,
@@ -576,7 +612,7 @@ def _tab_batch(api_key_input):
 
     urls_input = gr.Textbox(
         label="CivitAI URLs (one per line)",
-        placeholder="https://civitai.red/models/12345\nhttps://civitai.red/models/67890",
+        placeholder="https://civitai.com/models/12345\nhttps://civitai.com/models/67890",
         lines=6,
     )
 
@@ -657,9 +693,10 @@ def _tab_scan(api_key_input):
     )
 
     with gr.Row():
-        skip_existing_cb = gr.Checkbox(label="Skip already scanned models", value=True)
-        scan_btn         = gr.Button("🔍 Start Scan", variant="primary")
-        scan_cancel_btn  = gr.Button("🛑 Stop",        variant="stop")
+        skip_existing_cb    = gr.Checkbox(label="Skip already scanned models", value=True)
+        scan_btn            = gr.Button("🔍 Start Scan", variant="primary")
+        missing_preview_btn = gr.Button("📸 Download Missing Previews", variant="secondary")
+        scan_cancel_btn     = gr.Button("🛑 Stop",        variant="stop")
 
     scan_status   = gr.Markdown("💤")
     scan_progress = gr.Slider(minimum=0, maximum=1, value=0,
@@ -687,6 +724,11 @@ def _tab_scan(api_key_input):
     scan_btn.click(
         fn=cb_start_scan,
         inputs=[api_key_input, skip_existing_cb],
+        outputs=[scan_status],
+    )
+    missing_preview_btn.click(
+        fn=cb_start_missing_previews,
+        inputs=[api_key_input],
         outputs=[scan_status],
     )
     scan_cancel_btn.click(fn=cb_cancel_scan, outputs=[scan_status])

@@ -6,7 +6,7 @@ from typing import Optional
 import requests
 
 from . import api, utils
-from .model_manager import save_info, save_preview_image
+from .model_manager import save_info, save_preview_image, save_trigger_words
 
 
 @dataclass
@@ -141,14 +141,23 @@ class DownloadQueue:
                 },
             }
             save_info(dest, combined)
+            words = version_data.get("trained_words") or version_data.get("trainedWords")
+            if words:
+                save_trigger_words(dest, words)
 
         # Preview
-        if download_preview and version_data:
-            images = version_data.get("images", [])
+        if download_preview and (version_data or model_info):
+            images = (version_data or {}).get("images", [])
+            if not images and model_info:
+                images = model_info.get("images", [])
             if images:
-                img_url = images[0].get("url")
+                img_url = None
+                for img in images:
+                    if isinstance(img, dict) and img.get("url"):
+                        img_url = img.get("url")
+                        break
                 if img_url:
-                    result = save_preview_image(dest, img_url)
+                    result = save_preview_image(dest, img_url, api_key=api_key)
                     if result:
                         self.append_log(f"Preview : {result.name}")
 

@@ -31,22 +31,62 @@ def is_not_on_civitai(info: dict | None) -> bool:
     return bool(info and info.get("not_on_civitai"))
 
 
+def save_trigger_words(model_path: Path, trigger_words: list[str] | str) -> Path | None:
+    if isinstance(trigger_words, list):
+        text = ", ".join(w.strip() for w in trigger_words if w.strip())
+    else:
+        text = str(trigger_words).strip()
+    if not text:
+        return None
+    txt_path = model_path.with_suffix(".txt")
+    try:
+        txt_path.write_text(text, encoding="utf-8")
+        return txt_path
+    except OSError as exc:
+        print(f"[CivitAI Helper] Failed to save trigger words txt for {model_path.name}: {exc}")
+        return None
+
+
 # ── Preview ──────────────────────────────────────────────────────────────────
 
-def save_preview_image(model_path: Path, image_url: str) -> Path | None:
+def save_preview_image(model_path: Path, image_url: str, api_key: str = "") -> Path | None:
     import requests
-    image_url = image_url.replace("civitai.com", "civitai.red")
-    ext = image_url.rsplit(".", 1)[-1].split("?")[0].lower()
-    if ext not in ("png", "jpg", "jpeg", "webp"):
-        ext = "jpg"
-    dest = utils.preview_file_path(model_path, ext)
+    if not image_url:
+        return None
+
+    if image_url.startswith("//"):
+        image_url = "https:" + image_url
+
+    headers = api._build_headers(api_key)
     try:
-        resp = requests.get(image_url, timeout=15)
+        resp = requests.get(image_url, headers=headers, timeout=20)
         resp.raise_for_status()
+
+        content_type = resp.headers.get("Content-Type", "").lower()
+        if "png" in content_type:
+            ext = "png"
+        elif "webp" in content_type:
+            ext = "webp"
+        elif "jpeg" in content_type or "jpg" in content_type:
+            ext = "jpg"
+        else:
+            url_ext = image_url.rsplit(".", 1)[-1].split("?")[0].lower()
+            ext = url_ext if url_ext in ("png", "jpg", "jpeg", "webp") else "jpg"
+
+        dest = utils.preview_file_path(model_path, ext)
         dest.write_bytes(resp.content)
+
+        # Save primary .ext file for extra network views if not present
+        primary_dest = model_path.with_suffix(f".{ext}")
+        if primary_dest != dest and not primary_dest.exists():
+            try:
+                primary_dest.write_bytes(resp.content)
+            except Exception:
+                pass
+
         return dest
     except Exception as exc:
-        print(f"[CivitAI Helper] Preview non téléchargée : {exc}")
+        print(f"[CivitAI Helper] Preview non téléchargée pour {model_path.name} : {exc}")
         return None
 
 
@@ -159,12 +199,22 @@ def scan_models(api_key: str = "", skip_existing: bool = True) -> None:
         save_info(model_path, combined)
         state.append_log(f"[OK]   {model_path.name}")
 
+        words = version_info.get("trainedWords") or version_info.get("trained_words")
+        if words:
+            save_trigger_words(model_path, words)
+
         if not has_preview(model_path):
             images = version_info.get("images", [])
+            if not images and model_info:
+                images = model_info.get("images", [])
             if images:
-                url = images[0].get("url")
+                url = None
+                for img in images:
+                    if isinstance(img, dict) and img.get("url"):
+                        url = img.get("url")
+                        break
                 if url:
-                    result = save_preview_image(model_path, url)
+                    result = save_preview_image(model_path, url, api_key=api_key)
                     if result:
                         state.append_log(f"[IMG]  {result.name}")
 
@@ -172,6 +222,90 @@ def scan_models(api_key: str = "", skip_existing: bool = True) -> None:
 
     state.running = False
     state.append_log(f"Scan terminé : {state.done}/{state.total} modèles traités.")
+
+
+def download_missing_previews(api_key: str = "") -> None:
+    state = _scan_state
+    state.reset()
+    state.running = True
+
+    model_files = utils.iter_model_files()
+    missing_models = [m for m in model_files if not has_preview(m)]
+    state.total = len(missing_models)
+    state.append_log(f"Recherche de miniatures manquantes : {state.total} modèle(s) sans aperçu.")
+
+    if not missing_models:
+        state.append_log("✅ Tous vos modèles ont déjà une miniature !")
+        state.running = False
+        return
+
+    for model_path in missing_models:
+        if state.cancel:
+            state.append_log("Scan annulé.")
+            break
+
+        state.current = model_path.name
+        existing_info = load_info(model_path)
+        version_info = None
+        model_info = None
+
+        if existing_info and not is_not_on_civitai(existing_info):
+            version_info = existing_info
+            model_info = existing_info.get("model", {})
+        else:
+            state.append_log(f"[HASH] {model_path.name}…")
+            try:
+                sha256 = utils.sha256_of_file(model_path)
+                version_info = api.fetch_version_by_hash(sha256, api_key)
+                if version_info:
+                    model_id = version_info.get("modelId")
+                    model_info = api.fetch_model_info(str(model_id), api_key) if model_id else {}
+                    combined = {
+                        **version_info,
+                        "model": {
+                            "name": (model_info or {}).get("name", ""),
+                            "type": (model_info or {}).get("type", ""),
+                            "tags": (model_info or {}).get("tags", []),
+                            "description": (model_info or {}).get("description", ""),
+                        },
+                        "sha256": sha256,
+                    }
+                    save_info(model_path, combined)
+                else:
+                    mark_not_on_civitai(model_path)
+            except Exception as exc:
+                state.append_log(f"[ERR] {model_path.name} : {exc}")
+                state.done += 1
+                continue
+
+        if version_info:
+            words = version_info.get("trainedWords") or version_info.get("trained_words")
+            if words:
+                save_trigger_words(model_path, words)
+
+            images = version_info.get("images", [])
+            if not images and model_info:
+                images = model_info.get("images", [])
+            url = None
+            for img in images:
+                if isinstance(img, dict) and img.get("url"):
+                    url = img.get("url")
+                    break
+            if url:
+                res = save_preview_image(model_path, url, api_key=api_key)
+                if res:
+                    state.append_log(f"[IMG] ✅ {model_path.name} -> {res.name}")
+                else:
+                    state.append_log(f"[ERR] Échec image pour {model_path.name}")
+            else:
+                state.append_log(f"[WARN] Aucune image disponible pour {model_path.name}")
+        else:
+            state.append_log(f"[N/F] Non trouvé sur Civitai : {model_path.name}")
+
+        state.done += 1
+
+    state.running = False
+    state.append_log(f"Terminé : {state.done}/{state.total} miniatures traitées.")
 
 
 # ── Vérification MAJ ─────────────────────────────────────────────────────────
