@@ -41,7 +41,7 @@ class DownloadQueue:
         self.log.append(msg)
         if len(self.log) > 200:
             self.log = self.log[-200:]
-        print(f"[CivitAI Helper] {msg}")
+        utils.safe_print(f"[CivitAI Helper] {msg}")
 
     def download(
         self,
@@ -217,7 +217,7 @@ class BatchQueue:
         self.log.append(msg)
         if len(self.log) > 500:
             self.log = self.log[-500:]
-        print(f"[CivitAI Batch] {msg}")
+        utils.safe_print(f"[CivitAI Batch] {msg}")
 
     def add_item(self, item: BatchItem) -> None:
         self.items.append(item)

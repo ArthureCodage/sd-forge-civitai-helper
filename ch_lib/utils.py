@@ -1,6 +1,18 @@
 import os
+import sys
 import hashlib
 from pathlib import Path
+
+
+def safe_print(msg: str) -> None:
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        try:
+            enc = sys.stdout.encoding or "utf-8"
+            print(msg.encode(enc, errors="replace").decode(enc))
+        except Exception:
+            print(msg.encode("ascii", errors="replace").decode("ascii"))
 
 CIVITAI_INFO_SUFFIX = ".civitai.info"
 PREVIEW_SUFFIXES    = (

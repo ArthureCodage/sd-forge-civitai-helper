@@ -134,7 +134,7 @@ class ScanState:
 
     def append_log(self, msg: str) -> None:
         self.log.append(msg)
-        print(f"[CivitAI Helper] {msg}")
+        utils.safe_print(f"[CivitAI Helper] {msg}")
 
     @property
     def progress(self) -> float:
@@ -342,7 +342,7 @@ class UpdateCheckState:
 
     def append_log(self, msg: str) -> None:
         self.log.append(msg)
-        print(f"[CivitAI Helper] {msg}")
+        utils.safe_print(f"[CivitAI Helper] {msg}")
 
 
 _update_state = UpdateCheckState()
