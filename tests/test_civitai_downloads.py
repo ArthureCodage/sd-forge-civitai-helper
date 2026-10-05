@@ -7,7 +7,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ch_lib import api, downloader
+from ch_lib import api, downloader, utils
 
 
 class CivitaiDownloadUrlTests(unittest.TestCase):
@@ -28,6 +28,46 @@ class CivitaiDownloadUrlTests(unittest.TestCase):
             api.with_api_token("https://example.com/api/download/models/123", "secret-token"),
             "https://example.com/api/download/models/123",
         )
+
+    def test_parse_model_url_handles_all_variants(self):
+        # Standard model URL
+        self.assertEqual(api.parse_model_url("https://civitai.com/models/12345"), ("12345", None))
+        # With slug
+        self.assertEqual(api.parse_model_url("https://civitai.com/models/12345/my-model-slug"), ("12345", None))
+        # With modelVersionId query param
+        self.assertEqual(api.parse_model_url("https://civitai.com/models/12345?modelVersionId=67890"), ("12345", "67890"))
+        # With civitai.red
+        self.assertEqual(api.parse_model_url("https://civitai.red/models/12345?modelVersionId=67890"), ("12345", "67890"))
+        # Direct version URL
+        self.assertEqual(api.parse_model_url("https://civitai.com/model-versions/67890"), (None, "67890"))
+        # Direct download URL
+        self.assertEqual(api.parse_model_url("https://civitai.red/api/download/models/67890?type=Model"), (None, "67890"))
+        # Pure numeric ID
+        self.assertEqual(api.parse_model_url("12345"), ("12345", None))
+
+
+class ModelUtilsTests(unittest.TestCase):
+    def test_info_file_path_preserves_dots_in_model_name(self):
+        p1 = Path("/models/Lora/flux.1-dev.safetensors")
+        self.assertEqual(utils.info_file_path(p1).name, "flux.1-dev.civitai.info")
+
+        p2 = Path("/models/Stable-diffusion/v1.5_pruned_emaonly.safetensors")
+        self.assertEqual(utils.info_file_path(p2).name, "v1.5_pruned_emaonly.civitai.info")
+
+    def test_preview_file_path_preserves_dots_in_model_name(self):
+        p = Path("/models/Lora/flux.1-dev.safetensors")
+        self.assertEqual(utils.preview_file_path(p, "png").name, "flux.1-dev.preview.png")
+
+    def test_iter_model_files_does_not_duplicate_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lora_dir = root / "models" / "Lora"
+            lora_dir.mkdir(parents=True)
+            (lora_dir / "test.safetensors").write_bytes(b"model")
+
+            found = utils.iter_model_files(root)
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].name, "test.safetensors")
 
 
 class BatchQueueStatusTests(unittest.TestCase):
@@ -56,7 +96,7 @@ class BatchQueueStatusTests(unittest.TestCase):
             self.assertFalse(bq.running)
             self.assertEqual(item.status, "completed")
             self.assertEqual(item.progress, 1.0)
-            self.assertEqual(bq.summary, "1/1 terminé(s), 0 erreur(s)")
+            self.assertEqual(bq.summary, "1/1 completed, 0 error(s)")
 
 
 if __name__ == "__main__":

@@ -56,6 +56,14 @@ def register_options() -> None:
     if shared is None:
         return
     try:
+        from . import utils
+        slider_component = None
+        try:
+            import gradio as gr
+            slider_component = getattr(gr, "Slider", None)
+        except Exception:
+            pass
+
         section = ("sd_forge_civitai_helper", "CivitAI Helper")
         shared.opts.add_option(
             API_KEY_OPTION,
@@ -70,7 +78,7 @@ def register_options() -> None:
             shared.OptionInfo(
                 1,
                 "Number of preview images to download per model (1-5)",
-                shared.NumberSlider,
+                slider_component,
                 {"minimum": 1, "maximum": 5, "step": 1},
                 section=section,
             ),
@@ -84,4 +92,8 @@ def register_options() -> None:
             ),
         )
     except Exception as exc:
-        print(f"[CivitAI Helper] Could not register settings: {exc}")
+        try:
+            from . import utils
+            utils.safe_print(f"[CivitAI Helper] Could not register settings: {exc}")
+        except Exception:
+            pass

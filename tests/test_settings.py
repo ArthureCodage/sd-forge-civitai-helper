@@ -24,10 +24,12 @@ class FakeShared:
         self.opts = FakeOpts()
 
     class OptionInfo:
-        def __init__(self, default, label, section=None):
+        def __init__(self, default, label, *args, **kwargs):
             self.default = default
             self.label = label
-            self.section = section
+            self.component = args[0] if args else None
+            self.component_args = args[1] if len(args) > 1 else None
+            self.section = kwargs.get("section")
 
 
 class SettingsTests(unittest.TestCase):
@@ -53,12 +55,14 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(settings.resolve_api_key(""), "env-token")
         self.patcher.start()
 
-    def test_register_options_adds_webui_setting(self):
+    def test_register_options_adds_all_three_settings(self):
         settings.register_options()
-        self.assertEqual(len(self.fake_shared.opts.added), 1)
-        key, option = self.fake_shared.opts.added[0]
-        self.assertEqual(key, settings.API_KEY_OPTION)
-        self.assertEqual(option.section, ("sd_forge_civitai_helper", "CivitAI Helper"))
+        self.assertEqual(len(self.fake_shared.opts.added), 3)
+
+        keys = [key for key, _ in self.fake_shared.opts.added]
+        self.assertIn(settings.API_KEY_OPTION, keys)
+        self.assertIn(settings.MAX_PREVIEWS_OPTION, keys)
+        self.assertIn(settings.AUTO_TXT_OPTION, keys)
 
 
 if __name__ == "__main__":

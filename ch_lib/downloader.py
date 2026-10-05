@@ -6,20 +6,20 @@ from typing import Optional
 import requests
 
 from . import api, settings, utils
-from .model_manager import save_info, save_preview_image, save_preview_images, save_trigger_words
+from .model_manager import save_info, save_preview_images, save_trigger_words
 
 
 @dataclass
 class DownloadTask:
-    url:        str
-    dest:       Path
-    filename:   str
-    sha256_expected: str = ""
-    total_bytes:     int = 0
+    url:              str
+    dest:             Path
+    filename:         str
+    sha256_expected:  str = ""
+    total_bytes:      int = 0
     downloaded_bytes: int = 0
-    done:      bool = False
-    cancelled: bool = False
-    error:     str  = ""
+    done:             bool = False
+    cancelled:        bool = False
+    error:            str  = ""
 
     @property
     def progress(self) -> float:
@@ -29,10 +29,10 @@ class DownloadTask:
 class DownloadQueue:
     def __init__(self) -> None:
         self.current:  DownloadTask | None = None
-        self.running:  bool       = False
-        self._cancel:  bool       = False
-        self.log: list[str]       = []
-        self._lock = threading.Lock()
+        self.running:  bool                = False
+        self._cancel:  bool                = False
+        self.log:      list[str]           = []
+        self._lock                         = threading.Lock()
 
     def cancel(self) -> None:
         self._cancel = True
@@ -56,80 +56,126 @@ class DownloadQueue:
         self.current  = task
         self.log      = []
 
-        dest = task.dest
-        dest.parent.mkdir(parents=True, exist_ok=True)
-
-        # Resume support
-        resume_pos = dest.stat().st_size if dest.exists() else 0
-        headers    = api._build_headers(api_key)
-        download_url = api.with_api_token(task.url, api_key)
-
-        # Try to resume if file exists
-        use_resume = resume_pos > 0
-        if use_resume:
-            headers["Range"] = f"bytes={resume_pos}-"
-            self.append_log(f"Resume depuis {utils.format_size(resume_pos / 1024)}…")
-
         try:
-            resp = requests.get(download_url, headers=headers, stream=True, timeout=30)
+            dest = task.dest
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            part_dest = dest.with_name(f"{dest.name}.part")
 
-            # Handle 416 Range Not Satisfiable (expired URL or range mismatch)
-            if resp.status_code == 416 and use_resume:
-                self.append_log("URL expired or range invalid, restarting download from beginning…")
-                dest.unlink(missing_ok=True)
-                resume_pos = 0
-                use_resume = False
-                headers.pop("Range", None)
-                task.downloaded_bytes = 0
-                # Retry without Range
+            # Check if destination file already exists and is complete
+            if dest.exists() and task.sha256_expected:
+                self.append_log(f"File already exists: {task.filename}. Checking SHA256...")
+                try:
+                    existing_hash = utils.sha256_of_file(dest)
+                    if existing_hash.lower() == task.sha256_expected.lower():
+                        task.done = True
+                        task.total_bytes = dest.stat().st_size
+                        task.downloaded_bytes = dest.stat().st_size
+                        self.append_log(f"✅ File already present and SHA256 matches: {task.filename}")
+                        self._save_metadata(dest, version_data, model_info, download_preview, api_key)
+                        return
+                except Exception:
+                    pass
+
+            # Resume support from .part file
+            resume_pos = part_dest.stat().st_size if part_dest.exists() else 0
+            headers = api._build_headers(api_key)
+            download_url = api.with_api_token(task.url, api_key)
+
+            use_resume = resume_pos > 0
+            if use_resume:
+                headers["Range"] = f"bytes={resume_pos}-"
+                self.append_log(f"Resuming download from {utils.format_size(resume_pos / 1024)}…")
+
+            try:
                 resp = requests.get(download_url, headers=headers, stream=True, timeout=30)
 
-            resp.raise_for_status()
-        except requests.exceptions.RequestException as exc:
-            task.error = str(exc)
-            self.append_log(f"[ERR] {exc}")
-            self.running = False
-            return
+                # Handle 416 Range Not Satisfiable (file changed on server or range out of bounds)
+                if resp.status_code == 416 and use_resume:
+                    self.append_log("Range invalid or file updated on server, restarting from beginning…")
+                    part_dest.unlink(missing_ok=True)
+                    resume_pos = 0
+                    use_resume = False
+                    headers.pop("Range", None)
+                    task.downloaded_bytes = 0
+                    resp = requests.get(download_url, headers=headers, stream=True, timeout=30)
 
-        total = int(resp.headers.get("Content-Length", 0)) + resume_pos
-        task.total_bytes     = total
-        task.downloaded_bytes = resume_pos
-
-        mode = "ab" if resume_pos else "wb"
-        self.append_log(f"Téléchargement : {task.filename} ({utils.format_size(total / 1024)})")
-
-        try:
-            with open(dest, mode) as fh:
-                for chunk in resp.iter_content(chunk_size=1 << 16):
-                    if self._cancel:
-                        task.cancelled = True
-                        self.append_log("Téléchargement annulé.")
-                        self.running = False
-                        return
-                    fh.write(chunk)
-                    task.downloaded_bytes += len(chunk)
-        except OSError as exc:
-            task.error = str(exc)
-            self.append_log(f"[ERR] Écriture : {exc}")
-            self.running = False
-            return
-
-        # Vérification SHA256
-        if task.sha256_expected:
-            self.append_log("Vérification SHA256…")
-            actual = utils.sha256_of_file(dest)
-            if actual.lower() != task.sha256_expected.lower():
-                task.error = "SHA256 invalide — fichier corrompu."
-                self.append_log(f"[ERR] {task.error}")
-                dest.unlink(missing_ok=True)
-                self.running = False
+                resp.raise_for_status()
+            except requests.exceptions.RequestException as exc:
+                task.error = str(exc)
+                self.append_log(f"[ERR] Network error: {exc}")
                 return
-            self.append_log("SHA256 OK ✓")
 
-        task.done = True
-        self.append_log(f"✅ Téléchargé : {task.filename}")
+            try:
+                # Proper HTTP 206 vs 200 handling to avoid corrupting file
+                if resp.status_code == 206:
+                    content_range = resp.headers.get("Content-Range", "")
+                    if "/" in content_range:
+                        try:
+                            total = int(content_range.rsplit("/", 1)[-1])
+                        except ValueError:
+                            total = int(resp.headers.get("Content-Length", 0)) + resume_pos
+                    else:
+                        total = int(resp.headers.get("Content-Length", 0)) + resume_pos
+                    mode = "ab"
+                else:
+                    resume_pos = 0
+                    total = int(resp.headers.get("Content-Length", 0))
+                    mode = "wb"
 
-        # Sauvegarde des métadonnées
+                task.total_bytes      = total
+                task.downloaded_bytes = resume_pos
+
+                self.append_log(f"Downloading: {task.filename} ({utils.format_size(total / 1024)})")
+
+                with open(part_dest, mode) as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):  # 1 MB chunk for high throughput
+                        if self._cancel:
+                            task.cancelled = True
+                            self.append_log("Download cancelled.")
+                            return
+                        if chunk:
+                            fh.write(chunk)
+                            task.downloaded_bytes += len(chunk)
+            except (OSError, requests.exceptions.RequestException, Exception) as exc:
+                task.error = str(exc)
+                self.append_log(f"[ERR] Download interrupted: {exc}")
+                return
+            finally:
+                resp.close()
+
+            if self._cancel or task.cancelled:
+                return
+
+            # Verification SHA256 on the downloaded .part file
+            if task.sha256_expected:
+                self.append_log("Verifying SHA256…")
+                actual = utils.sha256_of_file(part_dest)
+                if actual.lower() != task.sha256_expected.lower():
+                    task.error = "SHA256 mismatch — downloaded file is corrupted."
+                    self.append_log(f"[ERR] {task.error}")
+                    part_dest.unlink(missing_ok=True)
+                    return
+                self.append_log("SHA256 OK ✓")
+
+            # Atomically rename .part file to final destination
+            part_dest.replace(dest)
+            task.done = True
+            self.append_log(f"✅ Downloaded: {task.filename}")
+
+            # Save metadata and preview images
+            self._save_metadata(dest, version_data, model_info, download_preview, api_key)
+
+        finally:
+            self.running = False
+
+    def _save_metadata(
+        self,
+        dest: Path,
+        version_data: dict | None,
+        model_info: dict | None,
+        download_preview: bool,
+        api_key: str,
+    ) -> None:
         if version_data:
             combined = {
                 **version_data,
@@ -141,11 +187,11 @@ class DownloadQueue:
                 },
             }
             save_info(dest, combined)
-            words = version_data.get("trained_words") or version_data.get("trainedWords")
-            if words:
-                save_trigger_words(dest, words)
+            if settings.get_auto_txt():
+                words = version_data.get("trained_words") or version_data.get("trainedWords")
+                if words:
+                    save_trigger_words(dest, words)
 
-        # Preview
         if download_preview and (version_data or model_info):
             images = (version_data or {}).get("images", [])
             if not images and model_info:
@@ -156,9 +202,7 @@ class DownloadQueue:
                     max_cnt = settings.get_max_previews()
                     result = save_preview_images(dest, urls, api_key=api_key, max_count=max_cnt)
                     if result:
-                        self.append_log(f"Preview(s) : {result.name}")
-
-        self.running = False
+                        self.append_log(f"Preview saved: {result.name}")
 
     def start_async(
         self,
@@ -207,11 +251,12 @@ class BatchItem:
 
 class BatchQueue:
     def __init__(self) -> None:
-        self.items:         list[BatchItem]       = []
-        self.running:       bool                  = False
-        self._cancel:       bool                  = False
-        self.log:           list[str]             = []
-        self._current_task: Optional[DownloadTask] = None
+        self.items:         list[BatchItem]           = []
+        self.running:       bool                      = False
+        self._cancel:       bool                      = False
+        self.log:           list[str]                 = []
+        self._current_task: Optional[DownloadTask]    = None
+        self._active_queue: Optional[DownloadQueue]   = None
 
     def append_log(self, msg: str) -> None:
         self.log.append(msg)
@@ -229,13 +274,15 @@ class BatchQueue:
 
     def cancel(self) -> None:
         self._cancel = True
+        if self._active_queue:
+            self._active_queue.cancel()
 
     @property
     def summary(self) -> str:
         done   = sum(1 for i in self.items if i.status == "completed")
         errors = sum(1 for i in self.items if i.status == "error")
         total  = len(self.items)
-        return f"{done}/{total} terminé(s), {errors} erreur(s)"
+        return f"{done}/{total} completed, {errors} error(s)"
 
     def start(self, api_key: str = "") -> None:
         if self.running:
@@ -247,58 +294,63 @@ class BatchQueue:
 
     def _run(self, api_key: str) -> None:
         self.running = True
-        for item in self.items:
-            if self._cancel:
-                if item.status == "pending":
+        try:
+            for item in self.items:
+                if self._cancel:
+                    if item.status == "pending":
+                        item.status = "cancelled"
+                    continue
+                if item.status != "pending":
+                    continue
+
+                item.status = "downloading"
+                self.append_log(f"Starting: {item.filename}")
+
+                if not item._dl_url or item._dest_dir is None:
+                    item.status = "error"
+                    item.error  = "Configuration missing."
+                    self.append_log(f"[ERR] {item.filename} : {item.error}")
+                    continue
+
+                dest_path = item._dest_dir / item.filename
+                task = DownloadTask(
+                    url             = item._dl_url,
+                    dest            = dest_path,
+                    filename        = item.filename,
+                    sha256_expected = item._sha256,
+                )
+                self._current_task = task
+
+                # Synchronous download inside this background worker thread
+                _dq = DownloadQueue()
+                self._active_queue = _dq
+                _dq.download(
+                    task             = task,
+                    api_key          = api_key,
+                    version_data     = item._version_data,
+                    model_info       = item._model_info,
+                    download_preview = True,
+                )
+
+                self._active_queue = None
+                self._current_task = None
+
+                if task.error:
+                    item.status = "error"
+                    item.error  = task.error
+                    self.append_log(f"[ERR] {item.filename} : {task.error}")
+                elif task.cancelled or self._cancel:
                     item.status = "cancelled"
-                continue
-            if item.status != "pending":
-                continue
+                    self.append_log(f"[CANCELLED] {item.filename}")
+                else:
+                    item.status   = "completed"
+                    item.progress = 1.0
+                    self.append_log(f"✅ {item.filename}")
 
-            item.status = "downloading"
-            self.append_log(f"Début : {item.filename}")
-
-            if not item._dl_url or item._dest_dir is None:
-                item.status = "error"
-                item.error  = "Configuration manquante."
-                self.append_log(f"[ERR] {item.filename} : {item.error}")
-                continue
-
-            dest_path = item._dest_dir / item.filename
-            task = DownloadTask(
-                url             = item._dl_url,
-                dest            = dest_path,
-                filename        = item.filename,
-                sha256_expected = item._sha256,
-            )
-            self._current_task = task
-
-            # Synchronous download — runs inside this background thread
-            _dq = DownloadQueue()
-            _dq.download(
-                task             = task,
-                api_key          = api_key,
-                version_data     = item._version_data,
-                model_info       = item._model_info,
-                download_preview = True,
-            )
-
-            self._current_task = None
-
-            if task.error:
-                item.status = "error"
-                item.error  = task.error
-                self.append_log(f"[ERR] {item.filename} : {task.error}")
-            elif task.cancelled:
-                item.status = "cancelled"
-                self.append_log(f"[ANN] {item.filename}")
-            else:
-                item.status   = "completed"
-                item.progress = 1.0
-                self.append_log(f"✅ {item.filename}")
-
-        self.running = False
-        self.append_log(f"Lot terminé : {self.summary}")
+        finally:
+            self.running = False
+            self._active_queue = None
+            self.append_log(f"Batch finished: {self.summary}")
 
 
 _batch_queue = BatchQueue()
