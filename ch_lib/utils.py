@@ -1,4 +1,4 @@
-import os
+import re
 import sys
 import hashlib
 from pathlib import Path
@@ -14,6 +14,27 @@ def safe_print(msg: str) -> None:
         except Exception:
             print(msg.encode("ascii", errors="replace").decode("ascii"))
 
+
+_TOKEN_RE = re.compile(r"(token=)[^&\s'\"<>)]+", re.IGNORECASE)
+_BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE)
+_FORBIDDEN_NAME_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')
+
+
+def redact(text: object) -> str:
+    """Hide API tokens before a message reaches the console or the UI."""
+    out = _TOKEN_RE.sub(r"\1***", str(text))
+    return _BEARER_RE.sub(r"\1***", out)
+
+
+def safe_filename(name: object, fallback: str = "download.bin") -> str:
+    """Reduce a remote file name to a plain, Windows-safe base name."""
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = _FORBIDDEN_NAME_CHARS.sub("_", base).strip().rstrip(". ")
+    if not base:
+        return fallback
+    return base
+
+
 CIVITAI_INFO_SUFFIX = ".civitai.info"
 PREVIEW_SUFFIXES    = (
     ".preview.png", ".preview.jpg", ".preview.jpeg", ".preview.webp",
@@ -28,8 +49,11 @@ MODEL_TYPE_DIRS: dict[str, str] = {
     "TextualInversion":  "embeddings",
     "VAE":               "models/VAE",
     "ControlNet":        "models/ControlNet",
+    "Controlnet":        "models/ControlNet",
     "Upscaler":          "models/ESRGAN",
     "Hypernetwork":      "models/hypernetworks",
+    "MotionModule":      "models/AnimateDiff",
+    "Poses":             "models/Poses",
     "Other":             "models/Other",
 }
 
@@ -53,8 +77,24 @@ def resolve_model_dir(model_type: str, custom_dir: str | None = None) -> Path:
         p = Path(custom_dir.strip())
         destination = p if p.is_absolute() else root / p
     else:
-        relative = MODEL_TYPE_DIRS.get(model_type, "models/Other")
-        destination = root / relative
+        norm_type = (model_type or "Other").strip().lower()
+        custom_target = None
+        try:
+            from modules import shared
+            if hasattr(shared, "cmd_opts"):
+                if norm_type == "checkpoint" and getattr(shared.cmd_opts, "ckpt_dir", None):
+                    custom_target = Path(shared.cmd_opts.ckpt_dir)
+                elif norm_type in ("lora", "locon", "dora") and getattr(shared.cmd_opts, "lora_dir", None):
+                    custom_target = Path(shared.cmd_opts.lora_dir)
+        except Exception:
+            pass
+
+        if custom_target:
+            destination = custom_target
+        else:
+            dirs_map = {k.lower(): v for k, v in MODEL_TYPE_DIRS.items()}
+            relative = dirs_map.get(norm_type, "models/Other")
+            destination = root / relative
     destination.mkdir(parents=True, exist_ok=True)
     return destination
 
@@ -84,20 +124,54 @@ def iter_model_files(root: Path | None = None) -> list[Path]:
     if root is None:
         root = get_sd_root()
     results: list[Path] = []
-    for model_dir in MODEL_TYPE_DIRS.values():
-        scan_dir = root / model_dir
+    seen: set[Path] = set()
+
+    # Deduplicate directory names to avoid scanning the same directory multiple times
+    unique_dirs = list(dict.fromkeys(MODEL_TYPE_DIRS.values()))
+
+    # Check custom command-line flags from WebUI / Forge
+    custom_dirs: list[Path] = []
+    try:
+        from modules import shared
+        if hasattr(shared, "cmd_opts"):
+            ckpt_dir = getattr(shared.cmd_opts, "ckpt_dir", None)
+            if ckpt_dir:
+                custom_dirs.append(Path(ckpt_dir))
+            lora_dir = getattr(shared.cmd_opts, "lora_dir", None)
+            if lora_dir:
+                custom_dirs.append(Path(lora_dir))
+    except Exception:
+        pass
+
+    dirs_to_scan = [root / d for d in unique_dirs] + custom_dirs
+
+    for scan_dir in dirs_to_scan:
         if not scan_dir.exists():
             continue
-        for f in scan_dir.rglob("*"):
-            if f.is_file() and f.suffix.lower() in MODEL_EXTENSIONS:
-                if not any(part.startswith(".") for part in f.parts):
-                    results.append(f)
+        try:
+            for f in scan_dir.rglob("*"):
+                if f.is_file() and f.suffix.lower() in MODEL_EXTENSIONS:
+                    # Only hidden folders *inside* the scanned directory are
+                    # skipped: the install path itself may live under ~/.local.
+                    hidden = any(part.startswith(".") for part in f.relative_to(scan_dir).parts)
+                    resolved = f.resolve()
+                    if resolved not in seen and not hidden:
+                        seen.add(resolved)
+                        results.append(f)
+        except OSError:
+            continue
     return results
 
 
 def info_file_path(model_path: Path) -> Path:
-    return model_path.with_suffix("").with_suffix(CIVITAI_INFO_SUFFIX)
+    target = model_path.with_name(f"{model_path.stem}{CIVITAI_INFO_SUFFIX}")
+    if not target.exists():
+        # Fallback to legacy double-suffix path if it was previously created
+        legacy = model_path.with_suffix("").with_suffix(CIVITAI_INFO_SUFFIX)
+        if legacy.exists():
+            return legacy
+    return target
 
 
 def preview_file_path(model_path: Path, ext: str = "png") -> Path:
-    return model_path.with_suffix(f".preview.{ext}")
+    return model_path.with_name(f"{model_path.stem}.preview.{ext}")
