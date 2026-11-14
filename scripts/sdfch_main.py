@@ -15,54 +15,38 @@ try:
 except ImportError:
     script_callbacks = None
 
-from ch_lib import api, utils, model_manager, downloader, settings
+from ch_lib import api, utils, model_manager, downloader, settings, card_index
 from ch_lib.downloader import DownloadTask, BatchItem
 
 # ── Batch analysis phase state ─────────────────────────────────────────
 _resolve: dict = {"running": False, "total": 0, "done": 0, "log": []}
 
-# ── Card info cache for extra networks ─────────────────────────────────
-_card_cache: dict[str, dict] = {}
-
+# ── Card info for extra networks ───────────────────────────────────────
 
 def get_card_info_data(filename: str) -> dict:
+    empty = {"civitai_url": "", "trigger_words": ""}
     if not filename:
-        return {"civitai_url": "", "trigger_words": ""}
+        return empty
 
-    clean_name = filename.strip()
-    if clean_name in _card_cache:
-        return _card_cache[clean_name]
-
-    model_files = utils.iter_model_files()
-    matched_path = None
-    clean_stem = Path(clean_name).stem.lower()
-
-    for p in model_files:
-        if p.stem.lower() == clean_stem or p.name.lower() == clean_name.lower():
-            matched_path = p
-            break
-        if clean_name.replace("\\", "/").lower() in str(p).replace("\\", "/").lower():
-            matched_path = p
-            break
-
+    # The file lookup is indexed in memory; the small info/txt files are read
+    # fresh so a scan or download shows up without restarting the WebUI.
+    matched_path = card_index.find_model(filename)
     if not matched_path:
-        res = {"civitai_url": "", "trigger_words": ""}
-        _card_cache[clean_name] = res
-        return res
+        return empty
 
     info = model_manager.load_info(matched_path)
     civitai_url = ""
     trigger_words = ""
 
     if info:
-        model_id = info.get("modelId") or (info.get("model") or {}).get("id")
+        model_id = model_manager.info_model_id(info)
         version_id = info.get("id")
         if model_id and version_id:
             civitai_url = f"https://civitai.com/models/{model_id}?modelVersionId={version_id}"
         elif model_id:
             civitai_url = f"https://civitai.com/models/{model_id}"
 
-        words = info.get("trainedWords") or info.get("trained_words") or []
+        words = model_manager.info_trigger_words(info)
         if isinstance(words, list) and words:
             trigger_words = ", ".join(w for w in words if isinstance(w, str))
         elif isinstance(words, str):
@@ -77,9 +61,7 @@ def get_card_info_data(filename: str) -> dict:
         except Exception:
             pass
 
-    res = {"civitai_url": civitai_url, "trigger_words": trigger_words}
-    _card_cache[clean_name] = res
-    return res
+    return {"civitai_url": civitai_url, "trigger_words": trigger_words}
 
 
 # ── Callbacks Download ───────────────────────────────────────────────────────
@@ -98,7 +80,7 @@ def cb_fetch_model(url_or_id: str, api_key: str):
         if not model_id and version_id:
             # Direct version URL or download URL was supplied
             v_data = api.fetch_version_by_id(version_id, api_key)
-            model_id = str(v_data.get("modelId", ""))
+            model_id = str(v_data.get("modelId") or "")
             if not model_id:
                 return (
                     "❌ Model not found for version ID.", gr.update(choices=[]), gr.update(choices=[]),
@@ -131,12 +113,7 @@ def cb_fetch_model(url_or_id: str, api_key: str):
     trigger_words  = ", ".join(default_version.get("trained_words", []))
     model_type     = model_info.get("type", "Other")
 
-    cover_url = None
-    images = default_version.get("images", []) or model_info.get("images", [])
-    for img in images:
-        if isinstance(img, dict) and img.get("url"):
-            cover_url = img.get("url")
-            break
+    cover_url = _cover_url(default_version.get("images"), model_info.get("images"))
 
     base_model = default_version.get("base_model") or "?"
     stats = model_info.get("stats", {})
@@ -161,18 +138,18 @@ def cb_fetch_model(url_or_id: str, api_key: str):
     )
 
 
+def _cover_url(*image_lists):
+    urls = api.preview_image_urls(*image_lists)
+    return api.sized_image_url(urls[0]) if urls else None
+
+
 def cb_version_change(version_label: str, versions_cache: list):
     version = next((v for v in versions_cache if v["label"] == version_label), None)
     if not version:
         return gr.update(choices=[]), "", None
     file_names    = [f["name"] for f in version["files"]]
     trigger_words = ", ".join(version.get("trained_words", []))
-    cover_url = None
-    images = version.get("images", [])
-    for img in images:
-        if isinstance(img, dict) and img.get("url"):
-            cover_url = img.get("url")
-            break
+    cover_url = _cover_url(version.get("images"))
     return gr.update(choices=file_names, value=file_names[0] if file_names else None), trigger_words, cover_url
 
 
@@ -215,13 +192,15 @@ def cb_start_download(
         sha256_expected = file_info.get("sha256", ""),
     )
 
-    q.start_async(
+    started = q.start_async(
         task             = task,
         api_key          = api_key,
         version_data     = version,
         model_info       = model_info,
         download_preview = download_preview,
     )
+    if not started:
+        return "⚠️ A download is already in progress."
     return f"⏳ Starting download: {file_info['name']}…"
 
 
@@ -327,43 +306,71 @@ def cb_check_updates(api_key: str):
     return "⏳ Checking for updates...", []
 
 
-def cb_poll_updates():
+def _update_choice(index: int, result: dict) -> str:
+    return f"{index + 1}. {result['model_name']} → {result['latest_label']}"
+
+
+def cb_cancel_updates():
+    state = model_manager.get_update_state()
+    if state.running:
+        state.cancel = True
+        return "🛑 Cancelling..."
+    return "ℹ️ No active check."
+
+
+def cb_poll_updates(selected=None):
     state = model_manager.get_update_state()
     log   = "\n".join(state.log[-30:])
+    results = list(state.results)
 
-    if state.running:
-        return gr.update(value="⏳ In progress..."), gr.update(value=log), gr.update()
-
-    if not state.results:
-        msg = "✅ All your models are up to date." if state.log else "💤"
-        return gr.update(value=msg), gr.update(value=log), gr.update(value=[])
+    # Keep the user's ticks while the list refreshes.
+    choices = [_update_choice(i, r) for i, r in enumerate(results)]
+    kept    = [c for c in (selected or []) if c in choices]
+    picker  = gr.update(choices=choices, value=kept)
 
     rows = [
         [r["model_name"], r["local_version_id"],
          r["latest_label"], r["model_type"], r["model_path"]]
-        for r in state.results
+        for r in results
     ]
-    return (
-        gr.update(value=f"🆕 {len(rows)} update(s) available."),
-        gr.update(value=log),
-        gr.update(value=rows),
-    )
+
+    if state.running:
+        status = f"⏳ Checking {state.done}/{state.total}…"
+    elif rows:
+        status = f"🆕 {len(rows)} update(s) available."
+    else:
+        status = "✅ All your models are up to date." if state.log else "💤"
+
+    return gr.update(value=status), gr.update(value=log), gr.update(value=rows), picker
 
 
-def cb_download_update(selected_rows, api_key: str):
+def _selected_update_indexes(selected, count: int) -> list[int]:
+    indexes = []
+    for label in selected or []:
+        try:
+            idx = int(str(label).split(".", 1)[0]) - 1
+        except ValueError:
+            continue
+        if 0 <= idx < count and idx not in indexes:
+            indexes.append(idx)
+    return indexes
+
+
+def cb_download_update(selected, api_key: str):
     api_key = settings.resolve_api_key(api_key)
     state = model_manager.get_update_state()
-    if not state.results or not selected_rows:
-        return "❌ No rows selected."
+    if state.running:
+        return "⚠️ Wait for the update check to finish."
+    results = list(state.results)
+    indexes = _selected_update_indexes(selected, len(results))
+    if not results or not indexes:
+        return "❌ Tick at least one update to download."
 
     messages = []
     items_to_download = []
 
-    for row_idx in selected_rows:
-        try:
-            result = state.results[int(row_idx)]
-        except (IndexError, ValueError):
-            continue
+    for row_idx in indexes:
+        result = results[row_idx]
 
         try:
             version_info = api.fetch_version_by_id(str(result["latest_version_id"]), api_key)
@@ -373,7 +380,7 @@ def cb_download_update(selected_rows, api_key: str):
 
         files = [
             {
-                "name":    f.get("name", ""),
+                "name":    utils.safe_filename(f.get("name")),
                 "url":     f.get("downloadUrl", ""),
                 "size_kb": f.get("sizeKB", 0),
                 "sha256":  (f.get("hashes") or {}).get("SHA256", ""),
@@ -386,37 +393,44 @@ def cb_download_update(selected_rows, api_key: str):
             continue
 
         primary = next((f for f in files if f["name"].endswith(".safetensors")), files[0])
+        update_model_info = {
+            "id":   result.get("model_id"),
+            "name": result.get("model_name", ""),
+            "type": result.get("model_type", ""),
+        }
         existing_model_path = Path(result.get("model_path", ""))
         dest_dir = existing_model_path.parent if existing_model_path.exists() else utils.resolve_model_dir(result["model_type"])
 
-        items_to_download.append((result, primary, dest_dir, version_info))
+        items_to_download.append((result, primary, dest_dir, version_info, update_model_info))
 
     if not items_to_download:
         return "\n".join(messages) if messages else "❌ No valid updates to download."
 
     if len(items_to_download) == 1:
-        result, primary, dest_dir, version_info = items_to_download[0]
+        result, primary, dest_dir, version_info, update_model_info = items_to_download[0]
         q = downloader.get_queue()
-        if q.running:
-            return "⚠️ A download is already in progress."
         task = DownloadTask(
             url             = primary["url"],
             dest            = dest_dir / primary["name"],
             filename        = primary["name"],
             sha256_expected = primary.get("sha256", ""),
         )
-        q.start_async(
+        started = q.start_async(
             task             = task,
             api_key          = api_key,
             version_data     = version_info,
+            model_info       = update_model_info,
             download_preview = True,
         )
+        if not started:
+            return "⚠️ A download is already in progress."
         messages.append(f"⏳ Downloading update for {result['model_name']}...")
     else:
         bq = downloader.get_batch_queue()
         if bq.running:
             return "⚠️ A batch download is already in progress."
-        for result, primary, dest_dir, version_info in items_to_download:
+        bq.clear()
+        for result, primary, dest_dir, version_info, update_model_info in items_to_download:
             item = BatchItem(
                 url           = f"https://civitai.com/models/{result.get('model_id', '')}",
                 model_name    = result["model_name"],
@@ -428,44 +442,58 @@ def cb_download_update(selected_rows, api_key: str):
                 _sha256       = primary.get("sha256", ""),
                 _dest_dir     = dest_dir,
                 _version_data = version_info,
-                _model_info   = None,
+                _model_info   = update_model_info,
             )
             bq.add_item(item)
         bq.start(api_key)
-        messages.append(f"⏳ Queued {len(items_to_download)} updates in batch...")
+        messages.append(
+            f"⏳ Queued {len(items_to_download)} updates — follow progress in the 📦 Batch tab."
+        )
 
     return "\n".join(messages)
 
 
 # ── Callbacks Search ─────────────────────────────────────────────────────────
 
-def cb_search(query, model_type, page, api_key, nsfw):
+def cb_search(query, model_type, api_key, nsfw, cursor=""):
+    """Returns (rows, status, next cursor). An empty cursor means first page."""
     api_key = settings.resolve_api_key(api_key)
     try:
         data = api.search_models(
-            query=query,
+            query=query or "",
             model_type=model_type if model_type not in ("Tous", "All") else None,
-            limit=20, page=int(page), api_key=api_key, nsfw=nsfw,
+            limit=20, cursor=cursor or "", api_key=api_key, nsfw=nsfw,
         )
     except api.CivitaiAPIError as exc:
-        return gr.update(value=[]), f"❌ {exc}"
+        return gr.update(value=[]), f"❌ {exc}", ""
 
     items = data.get("items", [])
     if not items:
-        return gr.update(value=[]), "No results found."
+        return gr.update(value=[]), "No results found.", ""
 
     rows = [
         [
             m.get("name", ""),
             m.get("type", ""),
-            m.get("stats", {}).get("downloadCount", 0),
-            round(m.get("stats", {}).get("rating", 0), 2),
+            (m.get("stats") or {}).get("downloadCount", 0),
+            round((m.get("stats") or {}).get("rating", 0) or 0, 2),
             f"https://civitai.com/models/{m['id']}",
         ]
         for m in items
     ]
-    total = data.get("metadata", {}).get("totalItems", "?")
-    return gr.update(value=rows), f"🔍 {len(rows)} result(s) (total: {total})"
+    next_cursor = str((data.get("metadata") or {}).get("nextCursor") or "")
+    more = " — more available, click **Next page**" if next_cursor else " — end of results"
+    return gr.update(value=rows), f"🔍 {len(rows)} result(s){more}", next_cursor
+
+
+def cb_search_first(query, model_type, api_key, nsfw):
+    return cb_search(query, model_type, api_key, nsfw, "")
+
+
+def cb_search_next(query, model_type, api_key, nsfw, cursor):
+    if not cursor:
+        return gr.update(), "ℹ️ No further page. Run a search first.", ""
+    return cb_search(query, model_type, api_key, nsfw, cursor)
 
 
 # ── Callbacks Batch ──────────────────────────────────────────────────────────
@@ -502,7 +530,9 @@ def cb_batch_analyze(urls_text: str, api_key: str, custom_dir: str):
                 try:
                     if not model_id and version_id:
                         v_info = api.fetch_version_by_id(version_id, api_key)
-                        model_id = str(v_info.get("modelId", ""))
+                        model_id = str(v_info.get("modelId") or "")
+                        if not model_id:
+                            raise api.CivitaiAPIError("no model found for this version.")
 
                     model_info = api.fetch_model_info(model_id, api_key)
                 except api.CivitaiAPIError as exc:
@@ -667,7 +697,8 @@ def _tab_download(api_key_input):
 
     with gr.Row():
         with gr.Column(scale=3):
-            url_input     = gr.Textbox(label="URL or ID", placeholder="https://civitai.com/models/12345")
+            url_input     = gr.Textbox(label="URL or ID", placeholder="https://civitai.com/models/12345",
+                                       elem_id="ch_url_input")
             fetch_btn     = gr.Button("🔍 Fetch Info", variant="primary")
             model_status  = gr.Markdown("")
             model_summary = gr.Markdown("")
@@ -797,9 +828,11 @@ def _tab_search(api_key_input):
             value="All", scale=1,
         )
         nsfw_toggle  = gr.Checkbox(label="NSFW", value=False, scale=1)
-        page_input   = gr.Number(label="Page", value=1, minimum=1, precision=0, scale=1)
 
-    search_btn    = gr.Button("🔍 Search", variant="primary")
+    with gr.Row():
+        search_btn = gr.Button("🔍 Search", variant="primary")
+        next_btn   = gr.Button("➡️ Next page", variant="secondary")
+    next_cursor   = gr.State("")
     search_status = gr.Markdown("")
     search_results = gr.Dataframe(
         headers=["Name", "Type", "Downloads", "Rating", "URL"],
@@ -807,10 +840,21 @@ def _tab_search(api_key_input):
         interactive=False, wrap=True,
     )
 
+    search_inputs = [search_input, type_filter, api_key_input, nsfw_toggle]
     search_btn.click(
-        fn=cb_search,
-        inputs=[search_input, type_filter, page_input, api_key_input, nsfw_toggle],
-        outputs=[search_results, search_status],
+        fn=cb_search_first,
+        inputs=search_inputs,
+        outputs=[search_results, search_status, next_cursor],
+    )
+    search_input.submit(
+        fn=cb_search_first,
+        inputs=search_inputs,
+        outputs=[search_results, search_status, next_cursor],
+    )
+    next_btn.click(
+        fn=cb_search_next,
+        inputs=search_inputs + [next_cursor],
+        outputs=[search_results, search_status, next_cursor],
     )
 
 
@@ -836,18 +880,20 @@ def _tab_scan(api_key_input):
     gr.Markdown("---")
     gr.Markdown("#### 🆕 Check for updates")
 
-    update_btn       = gr.Button("🔄 Check Updates", variant="primary")
+    with gr.Row():
+        update_btn         = gr.Button("🔄 Check Updates", variant="primary")
+        update_cancel_btn  = gr.Button("🛑 Stop", variant="stop")
+        update_refresh_btn = gr.Button("🔄 Refresh Status", variant="secondary")
     update_status    = gr.Markdown("💤")
     update_log       = gr.Textbox(label="Update Logs", lines=5, interactive=False)
     update_table     = gr.Dataframe(
         headers=["Model", "Local Version", "New Version", "Type", "Path"],
         datatype=["str", "str", "str", "str", "str"],
-        interactive=True, label="Available updates",
+        interactive=False, label="Available updates",
     )
+    update_picker    = gr.CheckboxGroup(label="Updates to download", choices=[], value=[])
     dl_update_btn    = gr.Button("⬇️ Download Selected Updates", variant="primary")
     dl_update_result = gr.Markdown("")
-
-    selected_rows = gr.State([])
 
     scan_btn.click(
         fn=cb_start_scan,
@@ -871,18 +917,18 @@ def _tab_scan(api_key_input):
         inputs=[api_key_input],
         outputs=[update_status, update_table],
     )
+    update_cancel_btn.click(fn=cb_cancel_updates, outputs=[update_status])
+
+    update_outputs = [update_status, update_log, update_table, update_picker]
+    update_refresh_btn.click(fn=cb_poll_updates, inputs=[update_picker], outputs=update_outputs)
 
     if hasattr(gr, "Timer"):
         update_timer = gr.Timer(value=3.0)
-        update_timer.tick(fn=cb_poll_updates, outputs=[update_status, update_log, update_table])
+        update_timer.tick(fn=cb_poll_updates, inputs=[update_picker], outputs=update_outputs)
 
-    def on_table_select(evt: gr.SelectData):
-        return [evt.index[0]]
-
-    update_table.select(fn=on_table_select, outputs=[selected_rows])
     dl_update_btn.click(
         fn=cb_download_update,
-        inputs=[selected_rows, api_key_input],
+        inputs=[update_picker, api_key_input],
         outputs=[dl_update_result],
     )
 

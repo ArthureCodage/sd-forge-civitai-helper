@@ -1,4 +1,4 @@
-import os
+import re
 import sys
 import hashlib
 from pathlib import Path
@@ -13,6 +13,27 @@ def safe_print(msg: str) -> None:
             print(msg.encode(enc, errors="replace").decode(enc))
         except Exception:
             print(msg.encode("ascii", errors="replace").decode("ascii"))
+
+
+_TOKEN_RE = re.compile(r"(token=)[^&\s'\"<>)]+", re.IGNORECASE)
+_BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE)
+_FORBIDDEN_NAME_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')
+
+
+def redact(text: object) -> str:
+    """Hide API tokens before a message reaches the console or the UI."""
+    out = _TOKEN_RE.sub(r"\1***", str(text))
+    return _BEARER_RE.sub(r"\1***", out)
+
+
+def safe_filename(name: object, fallback: str = "download.bin") -> str:
+    """Reduce a remote file name to a plain, Windows-safe base name."""
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = _FORBIDDEN_NAME_CHARS.sub("_", base).strip().rstrip(". ")
+    if not base:
+        return fallback
+    return base
+
 
 CIVITAI_INFO_SUFFIX = ".civitai.info"
 PREVIEW_SUFFIXES    = (
@@ -130,8 +151,11 @@ def iter_model_files(root: Path | None = None) -> list[Path]:
         try:
             for f in scan_dir.rglob("*"):
                 if f.is_file() and f.suffix.lower() in MODEL_EXTENSIONS:
+                    # Only hidden folders *inside* the scanned directory are
+                    # skipped: the install path itself may live under ~/.local.
+                    hidden = any(part.startswith(".") for part in f.relative_to(scan_dir).parts)
                     resolved = f.resolve()
-                    if resolved not in seen and not any(part.startswith(".") for part in f.parts):
+                    if resolved not in seen and not hidden:
                         seen.add(resolved)
                         results.append(f)
         except OSError:

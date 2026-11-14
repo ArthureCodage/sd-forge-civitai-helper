@@ -4,6 +4,8 @@ from pathlib import Path
 
 from . import api, settings, utils
 
+_MAX_LOG_LINES = 1000
+
 
 # ── .civitai.info ────────────────────────────────────────────────────────────
 
@@ -12,15 +14,61 @@ def load_info(model_path: Path) -> dict | None:
     if not info_path.exists():
         return None
     try:
-        return json.loads(info_path.read_text(encoding="utf-8"))
+        data = json.loads(info_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def save_info(model_path: Path, data: dict) -> None:
     utils.info_file_path(model_path).write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def build_info(version: dict, model_info: dict | None = None, sha256: str = "") -> dict:
+    """Merge version and model data into the `.civitai.info` layout.
+
+    `version` is either a raw API version or an entry of
+    api.extract_versions(); both end up with the API key names (`modelId`,
+    `baseModel`, `trainedWords`) so that the update check and the card
+    buttons work whichever way the file was obtained.
+    """
+    model_info = model_info or {}
+    embedded = version.get("model") if isinstance(version.get("model"), dict) else {}
+    info = dict(version)
+
+    if not info.get("modelId"):
+        model_id = model_info.get("id") or embedded.get("id")
+        if model_id:
+            info["modelId"] = model_id
+    if not info.get("baseModel") and info.get("base_model"):
+        info["baseModel"] = info["base_model"]
+    if not info.get("trainedWords") and info.get("trained_words"):
+        info["trainedWords"] = info["trained_words"]
+
+    info["model"] = {
+        "id":          info.get("modelId"),
+        "name":        model_info.get("name") or embedded.get("name", ""),
+        "type":        model_info.get("type") or embedded.get("type", ""),
+        "tags":        model_info.get("tags") or embedded.get("tags", []),
+        "description": model_info.get("description") or embedded.get("description", ""),
+    }
+    if sha256:
+        info["sha256"] = sha256
+    return info
+
+
+def info_model_id(info: dict | None):
+    if not info:
+        return None
+    return info.get("modelId") or (info.get("model") or {}).get("id")
+
+
+def info_trigger_words(info: dict | None) -> list[str] | str:
+    if not info:
+        return []
+    return info.get("trainedWords") or info.get("trained_words") or []
 
 
 def mark_not_on_civitai(model_path: Path) -> None:
@@ -35,7 +83,7 @@ def save_trigger_words(model_path: Path, trigger_words: list[str] | str, overwri
     if not settings.get_auto_txt():
         return None
     if isinstance(trigger_words, list):
-        text = ", ".join(w.strip() for w in trigger_words if w.strip())
+        text = ", ".join(w.strip() for w in trigger_words if isinstance(w, str) and w.strip())
     else:
         text = str(trigger_words).strip()
     if not text:
@@ -55,13 +103,36 @@ def save_trigger_words(model_path: Path, trigger_words: list[str] | str, overwri
 
 # ── Preview ──────────────────────────────────────────────────────────────────
 
+def _fetch_image(url: str, headers: dict) -> tuple[bytes, str] | None:
+    """Download one still image; returns (bytes, extension) or None."""
+    import requests
+
+    resp = requests.get(url, headers=headers, timeout=20)
+    resp.raise_for_status()
+    if not resp.content:
+        return None
+
+    content_type = resp.headers.get("Content-Type", "").lower()
+    if content_type.startswith("video/"):
+        return None
+    if "png" in content_type:
+        ext = "png"
+    elif "webp" in content_type:
+        ext = "webp"
+    elif "jpeg" in content_type or "jpg" in content_type:
+        ext = "jpg"
+    else:
+        url_ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
+        ext = url_ext if url_ext in ("png", "jpg", "jpeg", "webp") else "jpg"
+    return resp.content, ext
+
+
 def save_preview_images(
     model_path: Path,
     image_urls: list[str] | str,
     api_key: str = "",
     max_count: int = 1,
 ) -> Path | None:
-    import requests
     if isinstance(image_urls, str):
         urls = [image_urls]
     elif isinstance(image_urls, list):
@@ -71,53 +142,69 @@ def save_preview_images(
     if not urls:
         return None
 
-    urls = urls[:max(1, max_count)]
+    wanted = max(1, max_count)
     headers = api._build_headers(api_key)
     first_saved = None
+    saved = 0
 
-    for idx, url in enumerate(urls):
+    for url in urls:
+        if saved >= wanted:
+            break
         if url.startswith("//"):
             url = "https:" + url
+
+        # Resized copy first (≈100 KB instead of several MB), original as fallback.
+        attempts = list(dict.fromkeys([api.sized_image_url(url), url]))
+        fetched = None
+        for candidate in attempts:
+            try:
+                fetched = _fetch_image(candidate, headers)
+                break
+            except Exception as exc:
+                if candidate == attempts[-1]:
+                    utils.safe_print(
+                        f"[CivitAI Helper] Preview download failed for {model_path.name}: {utils.redact(exc)}"
+                    )
+        if not fetched:
+            continue
+        content, ext = fetched
+
         try:
-            resp = requests.get(url, headers=headers, timeout=20)
-            resp.raise_for_status()
-
-            if not resp.content:
-                continue
-
-            content_type = resp.headers.get("Content-Type", "").lower()
-            if "png" in content_type:
-                ext = "png"
-            elif "webp" in content_type:
-                ext = "webp"
-            elif "jpeg" in content_type or "jpg" in content_type:
-                ext = "jpg"
-            else:
-                url_ext = url.rsplit(".", 1)[-1].split("?")[0].lower()
-                ext = url_ext if url_ext in ("png", "jpg", "jpeg", "webp") else "jpg"
-
-            if idx == 0:
+            if saved == 0:
                 dest = utils.preview_file_path(model_path, ext)
                 primary = model_path.with_name(f"{model_path.stem}.{ext}")
                 if primary != dest and not primary.exists():
                     try:
-                        primary.write_bytes(resp.content)
-                    except Exception:
+                        primary.write_bytes(content)
+                    except OSError:
                         pass
             else:
-                dest = model_path.with_name(f"{model_path.stem}.preview.{idx}.{ext}")
+                dest = model_path.with_name(f"{model_path.stem}.preview.{saved}.{ext}")
+            dest.write_bytes(content)
+        except OSError as exc:
+            utils.safe_print(f"[CivitAI Helper] Could not write preview for {model_path.name}: {exc}")
+            continue
 
-            dest.write_bytes(resp.content)
-            if idx == 0:
-                first_saved = dest
-        except Exception as exc:
-            utils.safe_print(f"[CivitAI Helper] Preview download failed ({idx+1}/{len(urls)}) for {model_path.name}: {exc}")
+        if saved == 0:
+            first_saved = dest
+        saved += 1
 
     return first_saved
 
 
 def save_preview_image(model_path: Path, image_url: str, api_key: str = "") -> Path | None:
     return save_preview_images(model_path, image_url, api_key=api_key, max_count=1)
+
+
+def save_previews_from_info(model_path: Path, info: dict, api_key: str = "") -> tuple[Path | None, bool]:
+    """Save previews listed in `info`. Returns (first saved file, any still image listed)."""
+    urls = api.preview_image_urls(info.get("images"))
+    if not urls:
+        return None, False
+    result = save_preview_images(
+        model_path, urls, api_key=api_key, max_count=settings.get_max_previews()
+    )
+    return result, True
 
 
 def has_preview(model_path: Path) -> bool:
@@ -127,10 +214,16 @@ def has_preview(model_path: Path) -> bool:
     )
 
 
-# ── Scan ─────────────────────────────────────────────────────────────────────
+# ── Background job state ─────────────────────────────────────────────────────
 
-class ScanState:
+class _JobState:
+    """Shared state of one background job; try_begin() makes starts atomic."""
+
     def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._clear()
+
+    def _clear(self) -> None:
         self.running = False
         self.cancel  = False
         self.total   = 0
@@ -139,10 +232,23 @@ class ScanState:
         self.log: list[str] = []
 
     def reset(self) -> None:
-        self.__init__()
+        with self._lock:
+            self._clear()
+
+    def try_begin(self) -> bool:
+        """Claim the job. False when it is already running."""
+        with self._lock:
+            if self.running:
+                return False
+            self._clear()
+            self.running = True
+            return True
 
     def append_log(self, msg: str) -> None:
+        msg = utils.redact(msg)
         self.log.append(msg)
+        if len(self.log) > _MAX_LOG_LINES:
+            del self.log[:-_MAX_LOG_LINES]
         utils.safe_print(f"[CivitAI Helper] {msg}")
 
     @property
@@ -154,6 +260,10 @@ class ScanState:
         return f"{self.done}/{self.total} — {self.current}"
 
 
+class ScanState(_JobState):
+    pass
+
+
 _scan_state = ScanState()
 
 
@@ -161,10 +271,30 @@ def get_scan_state() -> ScanState:
     return _scan_state
 
 
+# ── Scan ─────────────────────────────────────────────────────────────────────
+
+def _identify(model_path: Path, sha256: str, api_key: str) -> dict | None:
+    """Look a file up by hash and write its `.civitai.info`. None if unknown to CivitAI."""
+    version_info = api.fetch_version_by_hash(sha256, api_key)
+    if version_info is None:
+        mark_not_on_civitai(model_path)
+        return None
+
+    model_id = version_info.get("modelId")
+    try:
+        model_info = api.fetch_model_info(str(model_id), api_key) if model_id else {}
+    except api.CivitaiAPIError:
+        model_info = {}
+
+    info = build_info(version_info, model_info, sha256)
+    save_info(model_path, info)
+    return info
+
+
 def scan_models(api_key: str = "", skip_existing: bool = True) -> None:
     state = _scan_state
-    state.reset()
-    state.running = True
+    if not state.try_begin():
+        return
 
     try:
         model_files = utils.iter_model_files()
@@ -177,9 +307,8 @@ def scan_models(api_key: str = "", skip_existing: bool = True) -> None:
                 break
 
             state.current = model_path.name
-            existing_info = load_info(model_path)
 
-            if skip_existing and existing_info is not None:
+            if skip_existing and load_info(model_path) is not None:
                 state.append_log(f"[SKIP] {model_path.name}")
                 state.done += 1
                 continue
@@ -188,8 +317,8 @@ def scan_models(api_key: str = "", skip_existing: bool = True) -> None:
             try:
                 sha256 = utils.sha256_of_file(
                     model_path,
-                    progress_callback=lambda d, t: setattr(
-                        state, "current", f"{model_path.name} ({d * 100 // t}%)"
+                    progress_callback=lambda d, t, name=model_path.name: setattr(
+                        state, "current", f"{name} ({d * 100 // t if t else 100}%)"
                     ),
                 )
             except OSError as exc:
@@ -199,52 +328,31 @@ def scan_models(api_key: str = "", skip_existing: bool = True) -> None:
 
             state.append_log(f"[API]  Querying ({sha256[:12]}…)…")
             try:
-                version_info = api.fetch_version_by_hash(sha256, api_key)
+                info = _identify(model_path, sha256, api_key)
             except api.CivitaiAPIError as exc:
                 state.append_log(f"[ERR]  API error: {exc}")
                 state.done += 1
                 continue
-
-            if version_info is None:
-                state.append_log(f"[NOT FOUND] {model_path.name}")
-                mark_not_on_civitai(model_path)
+            except OSError as exc:
+                state.append_log(f"[ERR]  Could not write info file: {exc}")
                 state.done += 1
                 continue
 
-            try:
-                model_id   = version_info.get("modelId")
-                model_info = api.fetch_model_info(str(model_id), api_key) if model_id else {}
-            except api.CivitaiAPIError:
-                model_info = {}
+            if info is None:
+                state.append_log(f"[NOT FOUND] {model_path.name}")
+                state.done += 1
+                continue
 
-            combined = {
-                **version_info,
-                "model": {
-                    "name":        model_info.get("name", ""),
-                    "type":        model_info.get("type", ""),
-                    "tags":        model_info.get("tags", []),
-                    "description": model_info.get("description", ""),
-                },
-                "sha256": sha256,
-            }
-            save_info(model_path, combined)
             state.append_log(f"[OK]   {model_path.name}")
 
-            words = version_info.get("trainedWords") or version_info.get("trained_words")
+            words = info_trigger_words(info)
             if words:
                 save_trigger_words(model_path, words, overwrite=False)
 
             if not has_preview(model_path):
-                images = version_info.get("images", [])
-                if not images and model_info:
-                    images = model_info.get("images", [])
-                if images:
-                    urls = [img.get("url") for img in images if isinstance(img, dict) and img.get("url")]
-                    if urls:
-                        max_cnt = settings.get_max_previews()
-                        result = save_preview_images(model_path, urls, api_key=api_key, max_count=max_cnt)
-                        if result:
-                            state.append_log(f"[IMG]  {result.name}")
+                result, _ = save_previews_from_info(model_path, info, api_key)
+                if result:
+                    state.append_log(f"[IMG]  {result.name}")
 
             state.done += 1
 
@@ -255,8 +363,8 @@ def scan_models(api_key: str = "", skip_existing: bool = True) -> None:
 
 def download_missing_previews(api_key: str = "") -> None:
     state = _scan_state
-    state.reset()
-    state.running = True
+    if not state.try_begin():
+        return
 
     try:
         model_files = utils.iter_model_files()
@@ -274,59 +382,34 @@ def download_missing_previews(api_key: str = "") -> None:
                 break
 
             state.current = model_path.name
-            existing_info = load_info(model_path)
-            version_info = None
-            model_info = None
+            info = load_info(model_path)
 
-            if existing_info and not is_not_on_civitai(existing_info):
-                version_info = existing_info
-                model_info = existing_info.get("model", {})
-            else:
+            if info is None:
                 state.append_log(f"[HASH] {model_path.name}…")
                 try:
                     sha256 = utils.sha256_of_file(model_path)
-                    version_info = api.fetch_version_by_hash(sha256, api_key)
-                    if version_info:
-                        model_id = version_info.get("modelId")
-                        model_info = api.fetch_model_info(str(model_id), api_key) if model_id else {}
-                        combined = {
-                            **version_info,
-                            "model": {
-                                "name": (model_info or {}).get("name", ""),
-                                "type": (model_info or {}).get("type", ""),
-                                "tags": (model_info or {}).get("tags", []),
-                                "description": (model_info or {}).get("description", ""),
-                            },
-                            "sha256": sha256,
-                        }
-                        save_info(model_path, combined)
-                    else:
-                        mark_not_on_civitai(model_path)
+                    info = _identify(model_path, sha256, api_key)
                 except Exception as exc:
                     state.append_log(f"[ERR] {model_path.name}: {exc}")
                     state.done += 1
                     continue
 
-            if version_info:
-                words = version_info.get("trainedWords") or version_info.get("trained_words")
-                if words:
-                    save_trigger_words(model_path, words, overwrite=False)
-
-                images = version_info.get("images", [])
-                if not images and model_info:
-                    images = model_info.get("images", [])
-                urls = [img.get("url") for img in images if isinstance(img, dict) and img.get("url")]
-                if urls:
-                    max_cnt = settings.get_max_previews()
-                    res = save_preview_images(model_path, urls, api_key=api_key, max_count=max_cnt)
-                    if res:
-                        state.append_log(f"[IMG] ✅ {model_path.name} -> {res.name}")
-                    else:
-                        state.append_log(f"[ERR] Failed downloading preview for {model_path.name}")
-                else:
-                    state.append_log(f"[WARN] No preview image available for {model_path.name}")
-            else:
+            if info is None or is_not_on_civitai(info):
                 state.append_log(f"[NOT FOUND] Not found on CivitAI: {model_path.name}")
+                state.done += 1
+                continue
+
+            words = info_trigger_words(info)
+            if words:
+                save_trigger_words(model_path, words, overwrite=False)
+
+            result, had_images = save_previews_from_info(model_path, info, api_key)
+            if result:
+                state.append_log(f"[IMG] ✅ {model_path.name} -> {result.name}")
+            elif had_images:
+                state.append_log(f"[ERR] Failed downloading preview for {model_path.name}")
+            else:
+                state.append_log(f"[WARN] No still preview image available for {model_path.name}")
 
             state.done += 1
 
@@ -337,18 +420,10 @@ def download_missing_previews(api_key: str = "") -> None:
 
 # ── Updates check ─────────────────────────────────────────────────────────────
 
-class UpdateCheckState:
-    def __init__(self) -> None:
-        self.running = False
+class UpdateCheckState(_JobState):
+    def _clear(self) -> None:
+        super()._clear()
         self.results: list[dict] = []
-        self.log: list[str]      = []
-
-    def reset(self) -> None:
-        self.__init__()
-
-    def append_log(self, msg: str) -> None:
-        self.log.append(msg)
-        utils.safe_print(f"[CivitAI Helper] {msg}")
 
 
 _update_state = UpdateCheckState()
@@ -360,41 +435,58 @@ def get_update_state() -> UpdateCheckState:
 
 def check_for_updates(api_key: str = "") -> None:
     state = _update_state
-    state.reset()
-    state.running = True
+    if not state.try_begin():
+        return
 
     try:
         model_files = utils.iter_model_files()
+        state.total = len(model_files)
         state.append_log(f"Checking updates for {len(model_files)} model(s)…")
 
+        # Several local files often belong to the same CivitAI model:
+        # query each model once per run. None records a failed lookup.
+        remote_versions: dict[str, list[dict] | None] = {}
+
         for model_path in model_files:
+            if state.cancel:
+                state.append_log("Update check cancelled.")
+                break
+            state.current = model_path.name
+            state.done += 1
+
             info = load_info(model_path)
             if not info or is_not_on_civitai(info):
                 continue
 
             local_version_id = info.get("id")
-            model_id         = info.get("modelId")
+            model_id         = info_model_id(info)
             if not local_version_id or not model_id:
                 continue
 
-            try:
-                remote = api.fetch_model_info(str(model_id), api_key)
-            except api.CivitaiAPIError as exc:
-                state.append_log(f"[ERR] {model_path.name}: {exc}")
+            key = str(model_id)
+            if key not in remote_versions:
+                try:
+                    remote_versions[key] = api.extract_versions(api.fetch_model_info(key, api_key))
+                except api.CivitaiAPIError as exc:
+                    remote_versions[key] = None
+                    state.append_log(f"[ERR] {model_path.name}: {exc}")
+            versions = remote_versions[key]
+            if versions is None:
                 continue
 
-            versions = api.extract_versions(remote)
-            latest   = versions[0] if versions else None
+            local_base = info.get("baseModel") or info.get("base_model") or ""
+            latest = api.latest_version_for(versions, local_base)
             if latest and str(latest["id"]) != str(local_version_id):
+                model = info.get("model") or {}
                 state.results.append({
-                    "model_name":        info.get("model", {}).get("name", model_path.stem),
+                    "model_name":        model.get("name") or model_path.stem,
                     "model_path":        str(model_path),
                     "model_id":          model_id,
                     "local_version_id":  local_version_id,
                     "latest_version_id": latest["id"],
                     "latest_label":      latest["label"],
                     "files":             latest["files"],
-                    "model_type":        info.get("model", {}).get("type", "Other"),
+                    "model_type":        model.get("type") or "Other",
                 })
                 state.append_log(f"[UPD] {model_path.name} → {latest['label']}")
             else:

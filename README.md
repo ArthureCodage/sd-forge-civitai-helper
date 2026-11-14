@@ -89,6 +89,30 @@ git clone https://github.com/ArthureCodage/sd-forge-civitai-helper.git
 1. Paste multiple CivitAI model URLs into the text box (one per line).
 2. Click **🔍 Analyze URLs**, then click **⬇️ Download All**.
 
+### 4. Searching (`🔍 Search` Tab)
+1. Type keywords, pick a type, then click **🔍 Search** (or press Enter).
+2. Click **➡️ Next page** to load the following results.
+
+### 5. Updating Models (`🔄 Scan & Update` Tab)
+1. Click **🔄 Check Updates**. A newer version only counts as an update when it targets the **same base model** as your local file (a Flux release is not an update for an SDXL LoRA).
+2. Tick one or several entries under **Updates to download**, then click **⬇️ Download Selected Updates**. Several updates are queued in the **📦 Batch** tab.
+
+---
+
+## 🛡️ Reliability Notes
+
+- **Automatic retries:** API calls wait and retry on rate limits (HTTP 429) and server errors; interrupted downloads resume from the `.part` file up to 3 times.
+- **No broken files:** a login or error page is never saved as a model, and truncated downloads are rejected.
+- **API key stays private:** the key is masked (`token=***`) in every log line and error message.
+- **Light thumbnails:** previews are fetched at 640 px wide instead of the multi-megabyte originals, and video showcases are skipped in favour of the first still image.
+
+## 🧪 Running the Tests
+
+```bash
+python -m pip install pytest requests
+python -m pytest
+```
+
 ---
 
 ## 🔑 API Key Setup

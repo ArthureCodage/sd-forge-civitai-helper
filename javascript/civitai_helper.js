@@ -89,29 +89,34 @@
       return;
     }
 
-    if (cardCache.has(filename)) {
-      const info = cardCache.get(filename);
+    const info = await fetchCardInfo(filename);
+    if (info) {
       if (info.civitai_url)   card.dataset.chCivitaiUrl   = info.civitai_url;
       if (info.trigger_words) card.dataset.chTriggerWords = info.trigger_words;
-      injectCardButtons(card);
-      return;
     }
-
-    try {
-      const resp = await fetch(
-        `/civitai_helper/card_info?filename=${encodeURIComponent(filename)}`
-      );
-      if (resp.ok) {
-        const info = await resp.json();
-        cardCache.set(filename, info);
-        if (info.civitai_url)   card.dataset.chCivitaiUrl   = info.civitai_url;
-        if (info.trigger_words) card.dataset.chTriggerWords = info.trigger_words;
-      }
-    } catch (_) {
-      // Optional endpoint fallback
-    }
-
     injectCardButtons(card);
+  }
+
+  // One request per model name, shared by every card showing it (the same
+  // model appears in both txt2img and img2img). Empty answers are not kept,
+  // so a model scanned later gets its buttons on the next card refresh.
+  function fetchCardInfo(filename) {
+    if (cardCache.has(filename)) return cardCache.get(filename);
+
+    const request = fetch(
+      `/civitai_helper/card_info?filename=${encodeURIComponent(filename)}`
+    )
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .catch(() => null)
+      .then((info) => {
+        if (!info || (!info.civitai_url && !info.trigger_words)) {
+          cardCache.delete(filename);
+        }
+        return info;
+      });
+
+    cardCache.set(filename, request);
+    return request;
   }
 
   function scanCards() {
@@ -140,12 +145,16 @@
     }
   }
 
+  // Only the "URL or ID" field of the Download tab is auto-filled: pasting a
+  // URL into the search box or the destination folder would be a nuisance.
+  // The listener is delegated because Gradio builds the tab after this script runs.
   function initDownloadTab() {
-    const root = document.querySelector("#civitai_helper_root");
-    if (!root) return;
-    const inputs = root.querySelectorAll("input[type='text'], textarea");
-    inputs.forEach((inp) => {
-      inp.addEventListener("focus", () => tryAutoPaste(inp));
+    document.addEventListener("focusin", (e) => {
+      const target = e.target;
+      if (target instanceof HTMLElement &&
+          target.matches("#ch_url_input textarea, #ch_url_input input")) {
+        tryAutoPaste(target);
+      }
     });
   }
 
